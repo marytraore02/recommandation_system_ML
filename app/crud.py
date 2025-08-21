@@ -1,7 +1,7 @@
 # Nous séparons la logique d'accès à la base de données dans ce fichier.
 
 from typing import List, Optional, Dict, Any
-from .database import get_db_connection
+from database import get_db_connection
 
 def get_cagnottes_from_db() -> Dict[str, Dict[str, Any]]:
     conn = get_db_connection()
