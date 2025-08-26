@@ -10,10 +10,13 @@ from kafka import KafkaProducer
 import uuid
 import random
 import logging
+from faker import Faker
 
 # Configuration simple
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+fake = Faker('fr_FR')
 
 def send_test_message():
     """Envoyer un message de test simple"""
@@ -28,25 +31,36 @@ def send_test_message():
         # Données de test
         test_data = {
             "id": str(uuid.uuid4()),
-            "name": f"Test Cagnotte {random.randint(1, 1000)}",
-            "description": "Cagnotte de test pour vérifier le consumer",
-            "type": "Test",
-            "category": "Test",
-            "totalSolde": 10000,
-            "currentSolde": random.randint(1000, 9000),
-            "createdAt": "2024-01-01T10:00:00Z",
-            "updatedAt": "2024-01-01T10:00:00Z",
-            "status": "active"
-        }
-        
+            "name": "Aide pour l'école du Quartier",
+            "categorie": {
+                "id": str(uuid.uuid4()),
+                "name": "Education"
+            },
+            "description": "Cette cagnotte vise à collecter des fonds pour construire une nouvelle école dans notre village.",
+            "pays": "Cote d'ivoire",
+            "admin": {
+                "firstName": fake.first_name(),
+                "lastName": fake.last_name(), 
+                "phone": fake.phone_number(),
+                "email": fake.email(),
+                "picture": " "
+            },
+            "dateStart": "2025-08-21T13:09:19.224399",
+            "dateEnd": "2025-09-29T23:59:59",
+            "objectif": 50000,
+            "totalContributeurs": 1,
+            "totalContribuer": 500000,
+            "type": "PUBLIC",
+            "statut": "VALIDE",
+            "ressources": []
+        },
+
         # Envoyer le message
-        future = producer.send('create-cagnotte', value=test_data, key=test_data['id'])
+        future = producer.send('create-user', value=test_data, key=test_data['entity_id'])
         result = future.get(timeout=10)
         
         logger.info(f"✅ Message envoyé avec succès!")
-        logger.info(f"   ID: {test_data['id']}")
-        logger.info(f"   Nom: {test_data['name']}")
-        logger.info(f"   Budget: {test_data['currentSolde']}/{test_data['totalSolde']}€")
+        logger.info(f"   ID: {test_data['entity_id']}")
         logger.info(f"   Topic: {result.topic}")
         logger.info(f"   Partition: {result.partition}")
         logger.info(f"   Offset: {result.offset}")

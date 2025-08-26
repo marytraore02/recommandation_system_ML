@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
@@ -22,7 +21,7 @@ from recommender import engine
 
 # Configuration du logging
 logging.basicConfig(
-    level=logging.INFO, 
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -30,13 +29,14 @@ logger = logging.getLogger(__name__)
 # --- Configuration globale ---
 KAFKA_CONFIG = {
     'bootstrap_servers': os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
-    # 'topics': ["create-cagnotte", "update-cagnotte"],  # Ajoutez vos topics ici
-    'topics' : [
-            "create-cagnotte",
-            "update-cagnotte",
-            "create-contribution",
-            "create-user"
-        ],
+    'topics': [
+        "create-cagnotte",
+        "update-cagnotte",
+        "delete-cagnotte", 
+        "create-user",
+        "update-user",
+        "delete-user",
+    ],
     'group_id': "fastapi-analytics-consumer"
 }
 
@@ -60,6 +60,27 @@ class CagnotteAnalyticsConsumer:
         self.message_count = 0
         self.running = False
 
+    # conn_string = f"host={DB_CONFIG.host} port={DB_CONFIG.port} user={DB_CONFIG.user} password={DB_CONFIG.password} dbname=postgres"
+    # def create_database_if_not_exists(conn_string):
+    # # ... (fonction inchangée) ...
+    #     try:
+    #         conn = psycopg2.connect(conn_string.replace(f"dbname={DB_CONFIG.database}", "dbname=postgres"))
+    #         conn.autocommit = True
+    #         with conn.cursor() as cur:
+    #             cur.execute(f"SELECT 1 FROM pg_database WHERE datname = '{DB_CONFIG.database}';")
+    #             exists = cur.fetchone()
+    #             if not exists:
+    #                 cur.execute(f"CREATE DATABASE {DB_CONFIG.database};")
+    #                 print(f"Base de données '{DB_CONFIG.database}' créée avec succès.")
+    #             else:
+    #                 print(f"Base de données '{DB_CONFIG.database}' existe déjà.")
+    #         conn.close()
+    #     except psycopg2.OperationalError as e:
+    #         print(f"Échec de la connexion pour la création de la base de données : {e}")
+    #         return False
+    #     return True
+
+
     def get_db_connection(self):
         """Établir une connexion à la base de données"""
         try:
@@ -77,7 +98,7 @@ class CagnotteAnalyticsConsumer:
                 *KAFKA_CONFIG['topics'],
                 bootstrap_servers=KAFKA_CONFIG['bootstrap_servers'],
                 group_id=KAFKA_CONFIG['group_id'],
-                auto_offset_reset='earliest',
+                auto_offset_reset='latest',
                 enable_auto_commit=True,
                 auto_commit_interval_ms=1000,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')) if x else None,
@@ -93,8 +114,8 @@ class CagnotteAnalyticsConsumer:
             logger.error(f"❌ Erreur lors de la création du consumer: {e}")
             return False
 
-    def insert_cagnotte_analytics(self, cagnotte_data: Dict[str, Any]):
-        """Insérer les données analytiques de cagnotte, création de la table si nécessaire"""
+    def create_table_from_data(self, table_name: str, data: Dict[str, Any]):
+        """Créer une table dynamiquement basée sur la structure des données"""
         if not self.db_connection:
             self.db_connection = self.get_db_connection()
             if not self.db_connection:
@@ -102,20 +123,142 @@ class CagnotteAnalyticsConsumer:
 
         try:
             with self.db_connection.cursor() as cur:
-                # Vérifier/créer la table si elle n'existe pas
+                # Vérifier si la table existe
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = %s
+                    );
+                """, (table_name,))
+                
+                table_exists = cur.fetchone()[0]
+                
+                if not table_exists:
+                    # Créer les colonnes basées sur les données
+                    columns = []
+                    for key, value in data.items():
+                        # Renommer 'id' en 'entity_id' pour éviter le conflit
+                        column_name = "entity_id" if key == "id" else key
+                        
+                        if isinstance(value, int):
+                            col_type = "INTEGER"
+                        elif isinstance(value, float):
+                            col_type = "DECIMAL(15,2)"
+                        elif isinstance(value, bool):
+                            col_type = "BOOLEAN"
+                        elif isinstance(value, dict) or isinstance(value, list):
+                            col_type = "JSONB"
+                        else:
+                            col_type = "TEXT"
+                        
+                        columns.append(f'"{column_name}" {col_type}')
+                    
+                    # Ajouter les colonnes de timestamp
+                    columns.extend([
+                        "created_at TIMESTAMP DEFAULT NOW()",
+                        "updated_at TIMESTAMP DEFAULT NOW()"
+                    ])
+                    
+                    create_sql = f"""
+                        CREATE TABLE "{table_name}" (
+                            id SERIAL PRIMARY KEY,
+                            {', '.join(columns)}
+                        );
+                    """
+                    
+                    cur.execute(create_sql)
+                    logger.info(f"✅ Table '{table_name}' créée avec {len(columns)} colonnes")
+                else:
+                    logger.debug(f"📋 Table '{table_name}' existe déjà")
+                
+            self.db_connection.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la création de table {table_name}: {e}")
+            self.db_connection.rollback()
+            return False
+
+    def insert_dynamic_data(self, table_name: str, data: Dict[str, Any]):
+        """Insérer des données dans une table créée dynamiquement"""
+        if not self.db_connection:
+            self.db_connection = self.get_db_connection()
+            if not self.db_connection:
+                return False
+
+        try:
+            # Créer la table si elle n'existe pas
+            if not self.create_table_from_data(table_name, data):
+                return False
+
+            with self.db_connection.cursor() as cur:
+                # Préparer les données pour l'insertion
+                columns = []
+                values = []
+                placeholders = []
+                
+                for key, value in data.items():
+                    # Renommer 'id' en 'entity_id' pour éviter le conflit
+                    # column_name = "entity_id" if key == "id" else key
+                    # columns.append(f'"{column_name}"')
+                    columns.append(f'"{key}"')
+                    
+                    if isinstance(value, (dict, list)):
+                        values.append(json.dumps(value))
+                    else:
+                        values.append(value)
+                    placeholders.append("%s")
+                
+                # Ajouter updated_at
+                columns.append("updated_at")
+                values.append("NOW()")
+                placeholders.append("NOW()")
+                
+                # Simple insertion (pas d'UPSERT pour éviter les complications)
+                insert_sql = f"""
+                    INSERT INTO "{table_name}" ({', '.join(columns)}) 
+                    VALUES ({', '.join(placeholders)});
+                """
+                
+                cur.execute(insert_sql, values)
+                
+            self.db_connection.commit()
+            logger.info(f"✅ Données insérées dans la table '{table_name}' (entity_id: {data.get('id', 'N/A')})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'insertion dans {table_name}: {e}")
+            logger.error(f"📋 Données: {data}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
+            self.db_connection.rollback()
+            # Reconnexion en cas d'erreur
+            self.db_connection = None
+            return False
+
+    def insert_cagnotte_analytics(self, cagnotte_data: Dict[str, Any]):
+        """Insérer les données analytiques de cagnotte (méthode héritée)"""
+        if not self.db_connection:
+            self.db_connection = self.get_db_connection()
+            if not self.db_connection:
+                return False
+
+        try:
+            with self.db_connection.cursor() as cur:
+                # Adaptez cette requête selon votre schéma de base
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS cagnotte_analytics (
-                        cagnotte_id VARCHAR PRIMARY KEY,
-                        name VARCHAR,
-                        total_solde FLOAT,
-                        current_solde FLOAT,
-                        type VARCHAR,
-                        completion_rate FLOAT,
-                        created_at TIMESTAMP,
-                        updated_at TIMESTAMP
+                        cagnotte_id VARCHAR(255) PRIMARY KEY,
+                        name VARCHAR(255),
+                        total_solde DECIMAL(10,2),
+                        current_solde DECIMAL(10,2),
+                        type VARCHAR(100),
+                        completion_rate DECIMAL(5,2),
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP DEFAULT NOW()
                     );
                 """)
-                # Insérer ou mettre à jour la cagnotte
+                
                 cur.execute("""
                     INSERT INTO cagnotte_analytics 
                     (cagnotte_id, name, total_solde, current_solde, type, completion_rate, created_at, updated_at)
@@ -141,6 +284,7 @@ class CagnotteAnalyticsConsumer:
         except Exception as e:
             logger.error(f"❌ Erreur lors de la sauvegarde: {e}")
             self.db_connection.rollback()
+            # Reconnexion en cas d'erreur
             self.db_connection = None
             return False
 
@@ -151,17 +295,13 @@ class CagnotteAnalyticsConsumer:
                 logger.warning("⚠️ Message vide reçu")
                 return False
 
-            # Extraire l'ID de la cagnotte
-            cagnotte_id = message_value.get('id')
-            if not cagnotte_id:
-                logger.warning("⚠️ Message sans ID de cagnotte")
-                return False
-
             # Traitement selon le topic
             if topic == "create-cagnotte":
                 return self.handle_create_cagnotte(message_value)
             elif topic == "update-cagnotte":
                 return self.handle_update_cagnotte(message_value)
+            elif topic == "create-user":
+                return self.handle_create_user(message_value)
             else:
                 logger.warning(f"⚠️ Topic non géré: {topic}")
                 return True
@@ -173,6 +313,9 @@ class CagnotteAnalyticsConsumer:
     def handle_create_cagnotte(self, message_value: Dict[str, Any]) -> bool:
         """Traiter la création d'une cagnotte"""
         try:
+            logger.info(f"📥 Message reçue du topic: {message_value}")
+            
+            # 1. Enregistrement dans la table analytique (logique métier)
             cagnotte_data = {
                 'id': message_value.get('id'),
                 'name': message_value.get('name', 'Unknown'),
@@ -181,32 +324,64 @@ class CagnotteAnalyticsConsumer:
                 'type': message_value.get('type', 'Unknown'),
                 'completion_rate': 0
             }
-            logger.info(f"📥 Message reçue du topic: {message_value}")
+
+            # Calcul du taux de completion
+            if cagnotte_data['total_solde'] > 0:
+                cagnotte_data['completion_rate'] = (
+                    cagnotte_data['current_solde'] / cagnotte_data['total_solde'] * 100
+                )
             logger.info(f"📥 Cagnotte analytique: {cagnotte_data}")
 
-            # # Calcul du taux de completion
-            # if cagnotte_data['total_solde'] > 0:
-            #     cagnotte_data['completion_rate'] = (
-            #         cagnotte_data['current_solde'] / cagnotte_data['total_solde'] * 100
-            #     )
+            logger.info(f"📥 Message reçue du topic: {message_value}")
 
             # logger.info(f"📊 Nouvelle cagnotte: {cagnotte_data['name']} ({cagnotte_data['completion_rate']:.1f}%)")
 
-            # # Sauvegarder en base
-            # return self.insert_cagnotte_analytics(cagnotte_data)
+            # Sauvegarder dans la table analytique
+            analytics_success = self.insert_cagnotte_analytics(cagnotte_data)
+            
+            # 2. Enregistrement brut des données originales
+            raw_success = self.insert_dynamic_data("cagnottes", message_value)
+            
+            return analytics_success and raw_success
 
         except Exception as e:
             logger.error(f"❌ Erreur dans handle_create_cagnotte: {e}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
             return False
 
     def handle_update_cagnotte(self, message_value: Dict[str, Any]) -> bool:
         """Traiter la mise à jour d'une cagnotte"""
         try:
-            # Logique similaire mais pour les mises à jour
             logger.info(f"📝 Mise à jour cagnotte: {message_value.get('id')}")
-            return self.handle_create_cagnotte(message_value)  # Même logique pour l'instant
+            
+            # Enregistrer les données brutes de mise à jour
+            raw_success = self.insert_dynamic_data("raw_update_cagnotte", message_value)
+            
+            # Traiter aussi comme une création pour les analytics (même logique)
+            analytics_success = self.handle_create_cagnotte(message_value)
+            
+            return raw_success and analytics_success
+            
         except Exception as e:
             logger.error(f"❌ Erreur dans handle_update_cagnotte: {e}")
+            return False
+
+    def handle_create_user(self, message_value: Dict[str, Any]) -> bool:
+        """Traiter la création d'un utilisateur"""
+        try:
+            user_id = message_value.get('id') or message_value.get('user_id')
+            logger.info(f"👤 Nouvel utilisateur: {user_id}")
+            
+            # Enregistrer toutes les données utilisateur telles qu'elles arrivent
+            success = self.insert_dynamic_data("users", message_value)
+            
+            if success:
+                logger.info(f"✅ Utilisateur {user_id} enregistré avec succès")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur dans handle_create_user: {e}")
             return False
 
     def start_consuming(self):
