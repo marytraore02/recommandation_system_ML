@@ -20,6 +20,7 @@ from kafka.errors import KafkaError, NoBrokersAvailable, KafkaTimeoutError
 # Imports de votre application existante
 import crud
 import models
+import database
 from recommender import engine
 import redis.asyncio as redis
 from pydantic import BaseModel, Field, EmailStr
@@ -825,134 +826,134 @@ app = FastAPI(
 def read_root():
     return {"message": "Bienvenue sur l'API de recommandation de cagnottes !"}
 
-# @app.get(
-#     "/rankings", 
-#     response_model=List[models.VideoDetails],
-#     summary="Récupérer le top des vidéos classées"
-# )
-# async def get_top_videos(
-#     limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
-#     redis: redis.Redis = Depends(get_redis)
-# ):
-#     """
-#     Cet endpoint récupère les ID des vidéos les mieux classées depuis le sorted set `video_rankings`,
-#     puis charge les détails de chaque vidéo depuis les hashes correspondants en utilisant un pipeline Redis pour des performances optimales.
-#     """
-#     try:
-#         # Étape 1: Récupérer les ID des vidéos classées (du score le plus haut au plus bas)
-#         # On utilise ZRANGE avec desc=True, ce qui est l'équivalent de ZREVRANGE.
-#         # On récupère les `limit` premiers éléments (indices de 0 à limit-1).
-#         video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
+@app.get(
+    "/rankings", 
+    response_model=List[models.VideoDetails],
+    summary="Récupérer le top des vidéos classées"
+)
+async def get_top_videos(
+    limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
+    redis: redis.Redis = Depends(get_redis)
+):
+    """
+    Cet endpoint récupère les ID des vidéos les mieux classées depuis le sorted set `video_rankings`,
+    puis charge les détails de chaque vidéo depuis les hashes correspondants en utilisant un pipeline Redis pour des performances optimales.
+    """
+    try:
+        # Étape 1: Récupérer les ID des vidéos classées (du score le plus haut au plus bas)
+        # On utilise ZRANGE avec desc=True, ce qui est l'équivalent de ZREVRANGE.
+        # On récupère les `limit` premiers éléments (indices de 0 à limit-1).
+        video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
 
-#         if not video_ids:
-#             return [] # Retourne une liste vide si le classement n'existe pas
+        if not video_ids:
+            return [] # Retourne une liste vide si le classement n'existe pas
 
-#         # Étape 2: Utiliser un pipeline pour récupérer tous les détails en une seule fois
-#         pipe = redis.pipeline()
-#         for video_id in video_ids:
-#             pipe.hgetall(f"video:{video_id}")
+        # Étape 2: Utiliser un pipeline pour récupérer tous les détails en une seule fois
+        pipe = redis.pipeline()
+        for video_id in video_ids:
+            pipe.hgetall(f"video:{video_id}")
         
-#         # Exécuter le pipeline : une seule communication réseau avec Redis
-#         video_data_list = await pipe.execute()
+        # Exécuter le pipeline : une seule communication réseau avec Redis
+        video_data_list = await pipe.execute()
 
-#         # Étape 3: Formater la réponse
-#         # Pydantic va automatiquement convertir les types (ex: str -> int)
-#         results = []
-#         for data in video_data_list:
-#             if data:  # S'assurer que le hash n'était pas vide ou supprimé
-#                 results.append(models.VideoDetails(**data))
+        # Étape 3: Formater la réponse
+        # Pydantic va automatiquement convertir les types (ex: str -> int)
+        results = []
+        for data in video_data_list:
+            if data:  # S'assurer que le hash n'était pas vide ou supprimé
+                results.append(models.VideoDetails(**data))
 
-#         return results
+        return results
 
-#     except Exception as e:
-#         # Loggez l'erreur de manière appropriée dans une application réelle
-#         print(f"❌ Erreur lors de la récupération depuis Redis: {e}")
-#         raise HTTPException(
-#             status_code=500, 
-#             detail="Impossible de récupérer le classement depuis Redis."
-#         )
+    except Exception as e:
+        # Loggez l'erreur de manière appropriée dans une application réelle
+        print(f"❌ Erreur lors de la récupération depuis Redis: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Impossible de récupérer le classement depuis Redis."
+        )
     
 
-# @app.get(
-#     "/rankings/enriched", 
-#     response_model=List[models.VideoEnrichedDetails],
-#     summary="Récupérer le top des vidéos avec les détails de la cagnotte"
-# )
-# async def get_top_videos_enriched(
-#     limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
-#     redis: redis.Redis = Depends(get_redis),
-#     # db: asyncpg.Connection = Depends(get_db_conn)
-# ):
-#     """
-#     Cet endpoint effectue les étapes suivantes :
-#     1. Récupère les IDs des vidéos les mieux classées depuis Redis (Sorted Set).
-#     2. Récupère les détails de chaque vidéo depuis Redis (Hashes).
-#     3. Extrait les IDs uniques des cagnottes.
-#     4. Interroge PostgreSQL pour obtenir les détails de ces cagnottes.
-#     5. Fusionne les deux sources de données pour fournir une réponse complète.
-#     """
-#     try:
-#         # --- ÉTAPE 1 & 2 : Récupérer les données de base depuis Redis ---
-#         video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
-#         if not video_ids:
-#             return []
+@app.get(
+    "/rankings/enriched", 
+    response_model=List[models.VideoEnrichedDetails],
+    summary="Récupérer le top des vidéos avec les détails de la cagnotte"
+)
+async def get_top_videos_enriched(
+    limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
+    redis: redis.Redis = Depends(get_redis),
+    # db: asyncpg.Connection = Depends(get_db_conn)
+):
+    """
+    Cet endpoint effectue les étapes suivantes :
+    1. Récupère les IDs des vidéos les mieux classées depuis Redis (Sorted Set).
+    2. Récupère les détails de chaque vidéo depuis Redis (Hashes).
+    3. Extrait les IDs uniques des cagnottes.
+    4. Interroge PostgreSQL pour obtenir les détails de ces cagnottes.
+    5. Fusionne les deux sources de données pour fournir une réponse complète.
+    """
+    try:
+        # --- ÉTAPE 1 & 2 : Récupérer les données de base depuis Redis ---
+        video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
+        if not video_ids:
+            return []
 
-#         pipe = redis.pipeline()
-#         for video_id in video_ids:
-#             pipe.hgetall(f"video:{video_id}")
-#         videos_from_redis_raw = await pipe.execute()
+        pipe = redis.pipeline()
+        for video_id in video_ids:
+            pipe.hgetall(f"video:{video_id}")
+        videos_from_redis_raw = await pipe.execute()
 
-#         # Valider les données Redis avec Pydantic
-#         videos_from_redis = [models.VideoDetails(**data) for data in videos_from_redis_raw if data]
+        # Valider les données Redis avec Pydantic
+        videos_from_redis = [models.VideoDetails(**data) for data in videos_from_redis_raw if data]
 
-#         # --- ÉTAPE 3 : Extraire les IDs de cagnottes uniques ---
-#         cagnotte_ids = {video.cagnotte_id for video in videos_from_redis}
-#         # Convertir en liste d'entiers (ou le type approprié pour votre BDD)
-#         cagnotte_ids_int = [int(cid) for cid in cagnotte_ids]
-#         print(f"🔍 Cagnotte IDs extraits: {cagnotte_ids_int}")
+        # --- ÉTAPE 3 : Extraire les IDs de cagnottes uniques ---
+        cagnotte_ids = {video.cagnotte_id for video in videos_from_redis}
+        # Convertir en liste d'entiers (ou le type approprié pour votre BDD)
+        cagnotte_ids_int = [int(cid) for cid in cagnotte_ids]
+        print(f"🔍 Cagnotte IDs extraits: {cagnotte_ids_int}")
 
-#         if not cagnotte_ids_int:
-#             raise HTTPException(status_code=404, detail="Aucune cagnotte associée aux vidéos trouvées.")
+        if not cagnotte_ids_int:
+            raise HTTPException(status_code=404, detail="Aucune cagnotte associée aux vidéos trouvées.")
 
-#         # # --- ÉTAPE 4 : Interroger PostgreSQL pour les détails des cagnottes ---
-#         # # Utilisation de la syntaxe `WHERE id = ANY($1)` pour une requête efficace
-#         # query = """
-#         #     SELECT id, name, description, creator_name 
-#         #     FROM cagnottes 
-#         #     WHERE id = ANY($1)
-#         # """
-#         # cagnottes_records = await db.fetch(query, cagnotte_ids_int)
+        # # --- ÉTAPE 4 : Interroger PostgreSQL pour les détails des cagnottes ---
+        # # Utilisation de la syntaxe `WHERE id = ANY($1)` pour une requête efficace
+        # query = """
+        #     SELECT id, name, description, creator_name 
+        #     FROM cagnottes 
+        #     WHERE id = ANY($1)
+        # """
+        # cagnottes_records = await db.fetch(query, cagnotte_ids_int)
 
-#         # # Créer un dictionnaire pour un accès rapide : {cagnotte_id: CagnotteDetails}
-#         # cagnottes_map: Dict[int, CagnotteDetails] = {
-#         #     record['id']: CagnotteDetails(**record) for record in cagnottes_records
-#         # }
+        # # Créer un dictionnaire pour un accès rapide : {cagnotte_id: CagnotteDetails}
+        # cagnottes_map: Dict[int, CagnotteDetails] = {
+        #     record['id']: CagnotteDetails(**record) for record in cagnottes_records
+        # }
 
-#         # # --- ÉTAPE 5 : Fusionner les données ---
-#         # final_results = []
-#         # for video in videos_from_redis:
-#         #     cagnotte_id_int = int(video.cagnotte_id)
-#         #     cagnotte_details = cagnottes_map.get(cagnotte_id_int)
+        # # --- ÉTAPE 5 : Fusionner les données ---
+        # final_results = []
+        # for video in videos_from_redis:
+        #     cagnotte_id_int = int(video.cagnotte_id)
+        #     cagnotte_details = cagnottes_map.get(cagnotte_id_int)
             
-#         #     if cagnotte_details:
-#         #         # Créer l'objet de réponse final en combinant les deux sources
-#         #         enriched_video = VideoEnrichedDetails(
-#         #             **video.model_dump(),  # Copie les champs de la vidéo
-#         #             cagnotte=cagnotte_details # Ajoute l'objet cagnotte
-#         #         )
-#         #         final_results.append(enriched_video)
+        #     if cagnotte_details:
+        #         # Créer l'objet de réponse final en combinant les deux sources
+        #         enriched_video = VideoEnrichedDetails(
+        #             **video.model_dump(),  # Copie les champs de la vidéo
+        #             cagnotte=cagnotte_details # Ajoute l'objet cagnotte
+        #         )
+        #         final_results.append(enriched_video)
 
-#         # return final_results
-#         return []  # Placeholder tant que la BDD n'est pas intégrée
+        # return final_results
+        return []  # Placeholder tant que la BDD n'est pas intégrée
 
 
 
-#     except asyncpg.PostgresError as e:
-#         print(f"❌ Erreur PostgreSQL: {e}")
-#         raise HTTPException(status_code=500, detail="Erreur lors de la communication avec la base de données.")
-#     except Exception as e:
-#         print(f"❌ Erreur inattendue: {e}")
-#         raise HTTPException(status_code=500, detail="Une erreur interne est survenue.")
+    except asyncpg.PostgresError as e:
+        print(f"❌ Erreur PostgreSQL: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors de la communication avec la base de données.")
+    except Exception as e:
+        print(f"❌ Erreur inattendue: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue.")
     
 
 @app.get("/health")
