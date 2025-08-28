@@ -1,7 +1,7 @@
 import psycopg2
 import os
 
-def get_db_connection():
+def get_db_connection2():
     try:
         conn = psycopg2.connect(
             host=os.environ.get("DB_HOST", "localhost"), # "db" est le nom du service dans docker-compose

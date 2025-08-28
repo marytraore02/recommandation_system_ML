@@ -7,25 +7,43 @@ from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 
 
-# Ce modèle Pydantic permet de valider et de structurer les données de sortie.
-# Il doit correspondre à la structure que vous sauvegardez dans les Hashes Redis.
+class CagnotteDetails(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    objectif: Optional[int] = None
+    statut: Optional[str] = None
+    type: Optional[str] = None
+    pays: Optional[str] = None
+
 class VideoDetails(BaseModel):
     video_id: str
     cagnotte_id: str
-    # title: str
-    # cagnotte_name: str
-    # category: str
     score: float
     views: int
     shares: int
     favorites: int
     skips: int
-    # replays: int
-    # completion_rate: float
-    # engagement_rate: float
-    # recency_factor: float
-    # rank: int
-    # last_updated: Optional[str] = None
+    cagnotte_details: Optional[CagnotteDetails] = None
+    
+class VideoList(BaseModel):
+    popular: List[VideoDetails]
+    trending: List[VideoDetails]
+
+
+
+
+# Ce modèle Pydantic permet de valider et de structurer les données de sortie.
+# Il doit correspondre à la structure que vous sauvegardez dans les Hashes Redis.
+# class VideoDetails(BaseModel):
+#     video_id: str
+#     cagnotte_id: str
+#     score: float
+#     views: int
+#     shares: int
+#     favorites: int
+#     skips: int
+#     cagnotte_details: Optional[CagnotteDetails] = None
 
 
 class AdminDetails(BaseModel):
@@ -40,18 +58,18 @@ class CategorieDetails(BaseModel):
     id: uuid.UUID
     name: str
 
-# Modèle principal pour la cagnotte, reflétant la structure de sortie souhaitée
-class CagnotteDetailsFromDB(BaseModel):
-    id: uuid.UUID
-    name: str
-    description: Optional[str] = None
-    pays: str
-    objectif: int
-    totalContribuer: int # Notez le camelCase pour correspondre à votre JSON
-    statut: str
-    type: str
-    categorie: CategorieDetails
-    admin: AdminDetails
+# # Modèle principal pour la cagnotte, reflétant la structure de sortie souhaitée
+# class CagnotteDetails(BaseModel):
+#     id: uuid.UUID
+#     name: str
+#     description: Optional[str] = None
+#     pays: str
+#     objectif: int
+#     totalContribuer: int # Notez le camelCase pour correspondre à votre JSON
+#     statut: str
+#     type: str
+#     categorie: CategorieDetails
+#     admin: AdminDetails
 
 # Modèle de réponse final et enrichi pour votre endpoint
 class VideoEnrichedDetails(BaseModel):
@@ -71,7 +89,7 @@ class VideoEnrichedDetails(BaseModel):
     # recency_factor: float
     # rank: int
     # last_updated: Optional[str] = None
-    cagnotte: CagnotteDetailsFromDB # L'objet cagnotte complet et imbriqué
+    cagnotte: CagnotteDetails # L'objet cagnotte complet et imbriqué
 
 
 

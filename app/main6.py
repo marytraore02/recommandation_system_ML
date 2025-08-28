@@ -11,9 +11,10 @@ import os
 import traceback
 from datetime import datetime
 import asyncpg
-
+from database import get_db_connection2
 # Imports pour Kafka et PostgreSQL 
 import psycopg2
+from psycopg2 import sql, extras
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError, NoBrokersAvailable, KafkaTimeoutError
 
@@ -24,6 +25,7 @@ import database
 from recommender import engine
 import redis.asyncio as redis
 from pydantic import BaseModel, Field, EmailStr
+import random
 
 
 
@@ -46,31 +48,27 @@ TABLE_SCHEMAS = {
         # "codeParrain": "TEXT",
         # "pointFidelite": "INTEGER"
     },
-    "cagnottes": {
-        "id": "TEXT",
-        "name": "Aide pour l'école du Quartier",
-        "categorie": {
-          "id": "e3835430-d46a-4984-905f-dd8bf5c87cc1",
-          "name": "Education"
-        },
-        "description": "Cette cagnotte vise à collecter des fonds pour construire une nouvelle école dans notre village.",
-        "pays": "Cote d'ivoire",
-        "admin": {
-          "firstName": "ulrich",
-          "lastName": "Odaoh",
-          "phone": "+33612345678",
-          "email": "admin@deme.com",
-          "picture": " "
-        },
-        "dateStart": "2025-08-21T13:09:19.224399",
-        "dateEnd": "2025-09-29T23:59:59",
-        "objectif": 50000,
-        "totalContributeurs": 1,
-        "totalContribuer": 500000,
-        "type": "PUBLIC",
-        "statut": "VALIDE",
-        "ressources": []
-      },
+     "cagnottes": {
+        "id": "TEXT PRIMARY KEY",
+        "name": "TEXT",
+        "description": "TEXT",
+        "date_start": "TIMESTAMP",
+        "date_end": "TIMESTAMP",
+        "objectif": "INTEGER",
+        "statut": "TEXT",
+        "id_categorie": "TEXT",
+        "admin": "TEXT",
+        "type": "TEXT",
+        "created_date": "TIMESTAMP",
+        "last_modified_date": "TIMESTAMP",
+        "deleted": "BOOLEAN",
+        "total_solde": "INTEGER",
+        "current_solde": "INTEGER",
+        "pays": "TEXT",
+        "total_contributors": "INTEGER",
+        "total_contributed": "INTEGER",
+        "updated_at": "TIMESTAMP DEFAULT NOW()"
+    }
 }
 
 # Configuration du logging
@@ -95,12 +93,21 @@ DB_CONFIG = {
     'port': os.environ.get("DB_PORT", "5432")
 }
 
-redis_client = redis.from_url("redis://localhost:6379/0", decode_responses=True)
+def get_db_connection3():
+    """Crée et renvoie une nouvelle connexion à la base de données PostgreSQL."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        return conn
+    except psycopg2.OperationalError as e:
+        logger.error(f"❌ Erreur de connexion à la base de données : {e}")
+        return None
 
-# Dépendance FastAPI pour injecter le client Redis dans les routes
+# --- Configuration de Redis (Utilisation asynchrone) ---
+REDIS_URL = "redis://localhost:6379"
+
 async def get_redis():
-    """Fournit une instance du client Redis."""
-    return redis_client
+    """Dépendance qui fournit une connexion Redis asynchrone."""
+    return redis.from_url(REDIS_URL, decode_responses=True)
 
 # Variable globale pour contrôler le consumer
 consumer_instance = None
@@ -578,34 +585,67 @@ class CagnotteAnalyticsConsumer:
             return False
 
     def handle_create_cagnotte(self, message_value: Dict[str, Any]) -> bool:
-        """Traiter la création d'une cagnotte"""
+        """
+        Traiter la création d'une cagnotte
+        - Enregistre une vue analytique avec des données agrégées.
+        - Enregistre les données brutes dans une table pour un accès complet.
+        """
         try:
-            logger.info(f"📥 Message reçue du topic: {message_value}")
+            logger.info(f"📥 Message reçu du topic: {message_value}")
             
             # 1. Enregistrement dans la table analytique (logique métier)
+            # Adapté au nouveau schéma (utilisant total_solde et current_solde)
+            # Assurez-vous que ces valeurs existent dans le message avant de les utiliser
+            total_solde = message_value.get('total_solde', 0)
+            current_solde = message_value.get('current_solde', 0)
+            
             cagnotte_data = {
                 'id': message_value.get('id'),
                 'name': message_value.get('name', 'Unknown'),
-                'total_solde': float(message_value.get('totalSolde', 0)),
-                'current_solde': float(message_value.get('currentSolde', 0)),
+                'total_solde': total_solde,
+                'current_solde': current_solde,
                 'type': message_value.get('type', 'Unknown'),
                 'completion_rate': 0
             }
 
             # Calcul du taux de completion
-            if cagnotte_data['total_solde'] > 0:
-                cagnotte_data['completion_rate'] = (
-                    cagnotte_data['current_solde'] / cagnotte_data['total_solde'] * 100
-                )
+            if total_solde and total_solde > 0:
+                cagnotte_data['completion_rate'] = (current_solde / total_solde) * 100
 
             logger.info(f"📥 Cagnotte analytique: {cagnotte_data}")
             logger.info(f"📊 Nouvelle cagnotte: {cagnotte_data['name']} ({cagnotte_data['completion_rate']:.1f}%)")
 
-            # Sauvegarder dans la table analytique
+            # Sauvegarder dans la table analytique (hypothétique)
             analytics_success = self.insert_cagnotte_analytics(cagnotte_data)
             
             # 2. Enregistrement brut des données originales
-            raw_success = self.insert_dynamic_data("cagnottes", message_value)
+            # Créer un dictionnaire de données qui correspond exactement au nouveau schéma de la table "cagnottes"
+            raw_data = {
+                "id": message_value.get("id"),
+                "name": message_value.get("name"),
+                "description": message_value.get("description"),
+                "date_start": message_value.get("date_start"),
+                "date_end": message_value.get("date_end"),
+                "objectif": message_value.get("objectif"),
+                "statut": message_value.get("statut"),
+                # Extraction des UUIDs des objets imbriqués pour les colonnes TEXT
+                "id_categorie": message_value.get("categorie", {}).get("id"),
+                "admin": message_value.get("admin", {}).get("id"), # Supposant que l'admin a un ID
+                "type": message_value.get("type"),
+                "created_date": message_value.get("created_date"),
+                "last_modified_date": message_value.get("last_modified_date"),
+                "deleted": message_value.get("deleted"),
+                "total_solde": message_value.get("total_solde"),
+                "current_solde": message_value.get("current_solde"),
+                "pays": message_value.get("pays"),
+                "total_contributors": message_value.get("total_contributors"),
+                "total_contributed": message_value.get("total_contributed")
+            }
+            
+            # Filtrer les valeurs None pour éviter des erreurs d'insertion
+            raw_data = {k: v for k, v in raw_data.items() if v is not None}
+            
+            raw_success = self.insert_dynamic_data("cagnottes", raw_data)
             
             return analytics_success and raw_success
 
@@ -874,87 +914,184 @@ async def get_top_videos(
         )
     
 
+
+
+# Nouvel endpoint pour récupérer les données en cache et les enrichir
 @app.get(
-    "/rankings/enriched", 
-    response_model=List[models.VideoEnrichedDetails],
-    summary="Récupérer le top des vidéos avec les détails de la cagnotte"
+    "/api/videos/cached",
+    response_model=models.VideoList,
+    summary="Récupérer les vidéos populaires et tendances depuis le cache Redis et les enrichir avec les détails de cagnotte"
 )
-async def get_top_videos_enriched(
-    limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
-    redis: redis.Redis = Depends(get_redis),
-    # db: asyncpg.Connection = Depends(get_db_conn)
+async def get_cached_videos(redis_client: redis.Redis = Depends(get_redis)):
+    """
+    Cet endpoint récupère les données des vidéos populaires et tendances directement depuis Redis,
+    puis les enrichit en récupérant les détails de cagnotte correspondants depuis PostgreSQL.
+    """
+    conn = None
+    try:
+        # Étape 1: Récupérer les données brutes des vidéos populaires et tendances depuis Redis
+        popular_data, trending_data = await redis_client.mget("popular_videos", "trending_videos")
+
+        popular_videos_raw = json.loads(popular_data) if popular_data else []
+        trending_videos_raw = json.loads(trending_data) if trending_data else []
+
+        print("\n--- Étape 1: Données brutes des vidéos (depuis Redis) ---")
+        print(f"Vidéo populaires brutes récupérées: {len(popular_videos_raw)}")
+        print(f"Vidéo tendances brutes récupérées: {len(trending_videos_raw)}")
+
+        if not popular_videos_raw and not trending_videos_raw:
+            print("Aucune donnée populaire ou tendance trouvée dans Redis.")
+            return {"popular": [], "trending": []}
+
+        # Étape 2: Extraire tous les IDs de cagnotte uniques
+        cagnotte_ids = set()
+        for video in popular_videos_raw:
+            if video.get("cagnotte_id"):
+                cagnotte_ids.add(video["cagnotte_id"])
+        for video in trending_videos_raw:
+            if video.get("cagnotte_id"):
+                cagnotte_ids.add(video["cagnotte_id"])
+        
+        print(f"\n--- Étape 2: IDs de cagnotte uniques à rechercher dans PostgreSQL ---")
+        print(list(cagnotte_ids))
+
+        cagnottes_map = {}
+        if cagnotte_ids:
+            # Étape 3: Récupérer les données complètes des cagnottes depuis PostgreSQL
+            conn = get_db_connection3()
+            if not conn:
+                raise HTTPException(status_code=500, detail="Erreur de connexion à la base de données.")
+                
+            cur = conn.cursor(cursor_factory=extras.DictCursor)
+
+            cagnotte_placeholders = [sql.Literal(cid) for cid in cagnotte_ids]
+            cagnotte_list_sql = sql.SQL(',').join(cagnotte_placeholders)
+
+            query = sql.SQL("SELECT * FROM cagnottes WHERE id IN ({})").format(cagnotte_list_sql)
+            
+            print(f"\n--- Étape 3: Exécution de la requête SQL ---")
+            print(f"Requête: {cur.mogrify(query).decode('utf-8')}")
+
+            cur.execute(query)
+            cagnottes_results = cur.fetchall()
+            
+            cagnottes_map = {row['id']: dict(row) for row in cagnottes_results}
+            
+            logger.info(f"📊 {len(cagnottes_results)} cagnottes trouvées dans la BDD.")
+            print(f"IDs des cagnottes trouvées: {list(cagnottes_map.keys())}")
+            
+            found_ids = set(cagnottes_map.keys())
+            not_found_ids = cagnotte_ids - found_ids
+            print(f"IDs des cagnottes non trouvées: {list(not_found_ids)}")
+
+
+        # Étape 4: Combiner les données et construire la réponse finale
+        popular_videos_enriched = []
+        for video in popular_videos_raw:
+            cagnotte_id = video.get("cagnotte_id")
+            
+            # Créer un dictionnaire intermédiaire pour le mappage des champs
+            mapped_video_data = {
+                "video_id": video.get("video_id"),
+                "cagnotte_id": cagnotte_id,
+                "score": video.get("popularity_score", 0),
+                "views": video.get("event_breakdown", {}).get("video_view", 0),
+                "shares": video.get("event_breakdown", {}).get("video_share", 0),
+                "favorites": video.get("event_breakdown", {}).get("video_favorite", 0),
+                "skips": video.get("event_breakdown", {}).get("video_skip", 0),
+            }
+            
+            video_model = models.VideoDetails.model_validate(mapped_video_data)
+            
+            if cagnotte_id and cagnotte_id in cagnottes_map:
+                video_model.cagnotte_details = models.CagnotteDetails.model_validate(cagnottes_map[cagnotte_id])
+                print(f"✅ Vidéo {video_model.video_id} enrichie avec les détails de la cagnotte {cagnotte_id}")
+            else:
+                print(f"⚠️ Aucun détail de cagnotte trouvé pour la vidéo {video_model.video_id} (ID: {cagnotte_id})")
+            popular_videos_enriched.append(video_model)
+
+        trending_videos_enriched = []
+        for video in trending_videos_raw:
+            cagnotte_id = video.get("cagnotte_id")
+
+            # Créer un dictionnaire intermédiaire pour le mappage des champs
+            mapped_video_data = {
+                "video_id": video.get("video_id"),
+                "cagnotte_id": cagnotte_id,
+                "score": video.get("popularity_score", 0),
+                "views": video.get("event_breakdown", {}).get("video_view", 0),
+                "shares": video.get("event_breakdown", {}).get("video_share", 0),
+                "favorites": video.get("event_breakdown", {}).get("video_favorite", 0),
+                "skips": video.get("event_breakdown", {}).get("video_skip", 0),
+            }
+            
+            video_model = models.VideoDetails.model_validate(mapped_video_data)
+            
+            if cagnotte_id and cagnotte_id in cagnottes_map:
+                video_model.cagnotte_details = models.CagnotteDetails.model_validate(cagnottes_map[cagnotte_id])
+                print(f"✅ Vidéo {video_model.video_id} enrichie avec les détails de la cagnotte {cagnotte_id}")
+            else:
+                print(f"⚠️ Aucun détail de cagnotte trouvé pour la vidéo {video_model.video_id} (ID: {cagnotte_id})")
+            trending_videos_enriched.append(video_model)
+
+        print("\n--- Étape Finale: Réponse enrichie ---")
+        
+        return {
+            "popular": popular_videos_enriched,
+            "trending": trending_videos_enriched
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la récupération des données en cache depuis Redis et de l'enrichissement: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Une erreur interne s'est produite lors du traitement de la requête."
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
+
+@app.get(
+    "/api/videos/combined",
+    response_model=List[models.VideoDetails],
+    summary="Récupérer un flux de vidéos combiné et mélangé (populaires et tendances)"
+)
+async def get_combined_videos(
+    redis_client: redis.Redis = Depends(get_redis)
 ):
     """
-    Cet endpoint effectue les étapes suivantes :
-    1. Récupère les IDs des vidéos les mieux classées depuis Redis (Sorted Set).
-    2. Récupère les détails de chaque vidéo depuis Redis (Hashes).
-    3. Extrait les IDs uniques des cagnottes.
-    4. Interroge PostgreSQL pour obtenir les détails de ces cagnottes.
-    5. Fusionne les deux sources de données pour fournir une réponse complète.
+    Cet endpoint combine les résultats populaires et tendances, les enrichit avec les données de cagnotte
+    et les renvoie dans une liste unique mélangée.
     """
     try:
-        # --- ÉTAPE 1 & 2 : Récupérer les données de base depuis Redis ---
-        video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
-        if not video_ids:
-            return []
+        # Appeler l'endpoint existant pour obtenir les données enrichies
+        enriched_data = await get_cached_videos(redis_client)
 
-        pipe = redis.pipeline()
-        for video_id in video_ids:
-            pipe.hgetall(f"video:{video_id}")
-        videos_from_redis_raw = await pipe.execute()
+        # Concaténer les listes populaires et tendances
+        combined_list = enriched_data["popular"] + enriched_data["trending"]
+        
+        # Mélanger la liste pour créer un flux aléatoire
+        random.shuffle(combined_list)
+        
+        print(f"\n--- Flux combiné et mélangé ---")
+        print(f"Total de vidéos dans le flux: {len(combined_list)}")
+        
+        return combined_list
 
-        # Valider les données Redis avec Pydantic
-        videos_from_redis = [models.VideoDetails(**data) for data in videos_from_redis_raw if data]
-
-        # --- ÉTAPE 3 : Extraire les IDs de cagnottes uniques ---
-        cagnotte_ids = {video.cagnotte_id for video in videos_from_redis}
-        # Convertir en liste d'entiers (ou le type approprié pour votre BDD)
-        cagnotte_ids_int = [int(cid) for cid in cagnotte_ids]
-        print(f"🔍 Cagnotte IDs extraits: {cagnotte_ids_int}")
-
-        if not cagnotte_ids_int:
-            raise HTTPException(status_code=404, detail="Aucune cagnotte associée aux vidéos trouvées.")
-
-        # # --- ÉTAPE 4 : Interroger PostgreSQL pour les détails des cagnottes ---
-        # # Utilisation de la syntaxe `WHERE id = ANY($1)` pour une requête efficace
-        # query = """
-        #     SELECT id, name, description, creator_name 
-        #     FROM cagnottes 
-        #     WHERE id = ANY($1)
-        # """
-        # cagnottes_records = await db.fetch(query, cagnotte_ids_int)
-
-        # # Créer un dictionnaire pour un accès rapide : {cagnotte_id: CagnotteDetails}
-        # cagnottes_map: Dict[int, CagnotteDetails] = {
-        #     record['id']: CagnotteDetails(**record) for record in cagnottes_records
-        # }
-
-        # # --- ÉTAPE 5 : Fusionner les données ---
-        # final_results = []
-        # for video in videos_from_redis:
-        #     cagnotte_id_int = int(video.cagnotte_id)
-        #     cagnotte_details = cagnottes_map.get(cagnotte_id_int)
-            
-        #     if cagnotte_details:
-        #         # Créer l'objet de réponse final en combinant les deux sources
-        #         enriched_video = VideoEnrichedDetails(
-        #             **video.model_dump(),  # Copie les champs de la vidéo
-        #             cagnotte=cagnotte_details # Ajoute l'objet cagnotte
-        #         )
-        #         final_results.append(enriched_video)
-
-        # return final_results
-        return []  # Placeholder tant que la BDD n'est pas intégrée
-
-
-
-    except asyncpg.PostgresError as e:
-        print(f"❌ Erreur PostgreSQL: {e}")
-        raise HTTPException(status_code=500, detail="Erreur lors de la communication avec la base de données.")
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        print(f"❌ Erreur inattendue: {e}")
-        raise HTTPException(status_code=500, detail="Une erreur interne est survenue.")
-    
+        logger.error(f"❌ Erreur lors de la combinaison des données des vidéos: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Une erreur interne s'est produite lors de la combinaison des données."
+        )
+
+
 
 @app.get("/health")
 def health_check():
