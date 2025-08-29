@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Script de test qui envoie un message à Kafka ET l'enregistre dans PostgreSQL
-"""
-
 import json
 import time
 from kafka import KafkaProducer
@@ -20,6 +15,10 @@ logger = logging.getLogger(__name__)
 fake = Faker('fr_FR')
 
 CATEGORIES = ["Education", "Santé", "Sport", "Environnement", "Religion"]
+STATUS = ["VALIDE", "EN_COURS", "ANNULE"]
+TYPE = ["PUBLIC", "PRIVE"]
+PAYS = ["Mali", "Burkina Faso", "Côte d'Ivoire", "Sénégal", "Guinée", "Niger"]
+
 
 # --- NOUVEAU: Configuration de la connexion PostgreSQL ---
 # !!! REMPLACEZ PAR VOS PROPRES INFORMATIONS !!!
@@ -48,7 +47,7 @@ def create_table_if_not_exists():
                 date_end TIMESTAMP,
                 objectif INTEGER,
                 statut TEXT,
-                id_categorie TEXT,
+                categorie TEXT,
                 admin TEXT,
                 type TEXT,
                 created_date TIMESTAMP,
@@ -87,7 +86,7 @@ def save_to_postgres(data):
         sql = """
             INSERT INTO cagnottes (
                 id, name, description, date_start, date_end, objectif, statut,
-                id_categorie, admin, type, created_date, last_modified_date,
+                categorie, admin, type, created_date, last_modified_date,
                 deleted, total_solde, current_solde, pays, total_contributors,
                 total_contributed
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -95,7 +94,7 @@ def save_to_postgres(data):
         
         cur.execute(sql, (
             data['id'], data['name'], data['description'], data['date_start'],
-            data['date_end'], data['objectif'], data['statut'], data['id_categorie'],
+            data['date_end'], data['objectif'], data['statut'], data['categorie'],
             data['admin'], data['type'], data['created_date'], data['last_modified_date'],
             data['deleted'], data['total_solde'], data['current_solde'], data['pays'],
             data['total_contributors'], data['total_contributed']
@@ -122,30 +121,33 @@ def send_test_message():
     
     # --- Création des données de test (clés en snake_case pour correspondre à la BDD) ---
     random_category = random.choice(CATEGORIES)
+    status = random.choice(STATUS)
+    types = random.choice(TYPE)
+    pays = random.choice(PAYS)
     test_data = {
         "id": str(uuid.uuid4()),
         "name": f"Projet pour la catégorie {random_category}",
         "description": "Cette cagnotte vise à collecter des fonds.",
         "date_start": now.isoformat(),
-        "date_end": (now + timedelta(days=random.randint(30, 90))).isoformat(), # <-- CORRECTION
+        "date_end": (now + timedelta(days=random.randint(30, 90))).isoformat(),
         "objectif": random.randint(10000, 100000),
-        "statut": "VALIDE",
-        "id_categorie": str(uuid.uuid4()),
+        "statut": f"{status}",
+        "categorie": f"{random_category}",
         "admin": str(uuid.uuid4()),
-        "type": "PUBLIC",
+        "type": f"{types}",
         "created_date": now.isoformat(),
         "last_modified_date": now.isoformat(),
         "deleted": False,
         "total_solde": 0,
         "current_solde": 0,
-        "pays": "Mali",
+        "pays": f"{pays}",
         "total_contributors": random.randint(1, 200),
         "total_contributed": random.randint(100000, 1000000)
     }
 
-    # --- Étape 1: Sauvegarder dans PostgreSQL ---
-    if not save_to_postgres(test_data):
-        logger.warning("L'envoi à Kafka continue malgré l'échec de la BDD...")
+    # # --- Étape 1: Sauvegarder dans PostgreSQL ---
+    # if not save_to_postgres(test_data):
+    #     logger.warning("L'envoi à Kafka continue malgré l'échec de la BDD...")
 
     # --- Étape 2: Envoyer le message à Kafka ---
     try:
@@ -178,8 +180,8 @@ if __name__ == "__main__":
     print("🧪 Test Rapide Producer (Kafka + PostgreSQL)")
     print("=" * 40)
 
-    if not create_table_if_not_exists():
-        exit()
+    # if not create_table_if_not_exists():
+    #     exit()
 
     choice = input("1. Un message\n2. Plusieurs messages\nChoix (1-2): ").strip()
     if choice == "2":

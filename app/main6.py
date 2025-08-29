@@ -56,7 +56,7 @@ TABLE_SCHEMAS = {
         "date_end": "TIMESTAMP",
         "objectif": "INTEGER",
         "statut": "TEXT",
-        "id_categorie": "TEXT",
+        "categorie": "TEXT",
         "admin": "TEXT",
         "type": "TEXT",
         "created_date": "TIMESTAMP",
@@ -355,7 +355,7 @@ class CagnotteAnalyticsConsumer:
                 
                 for key, value in data.items():
                     # Renommer 'id' en 'entity_id' pour éviter le conflit
-                    column_name = "entity_id" if key == "id" else key
+                    column_name = key
                     columns.append(f'"{column_name}"')
                     
                     if isinstance(value, (dict, list)):
@@ -364,9 +364,9 @@ class CagnotteAnalyticsConsumer:
                         values.append(value)
                     placeholders.append("%s")
                 
-                # Ajouter updated_at
-                columns.append("updated_at")
-                placeholders.append("NOW()")
+                # # Ajouter updated_at
+                # columns.append("updated_at")
+                # placeholders.append("NOW()")
                 
                 # Construction de la requête d'insertion simple
                 insert_sql = f"""
@@ -380,7 +380,7 @@ class CagnotteAnalyticsConsumer:
                 cur.execute(insert_sql, values)
                 
             self.db_connection.commit()
-            logger.info(f"✅ Données insérées dans la table '{table_name}' (entity_id: {data.get('id', 'N/A')})")
+            logger.info(f"✅ Données insérées dans la table '{table_name}'")
             return True
             
         except Exception as e:
@@ -510,58 +510,6 @@ class CagnotteAnalyticsConsumer:
         logger.debug(f"🔄 Mapping utilisateur: {user_data} -> {mapped}")
         return mapped
 
-    def insert_cagnotte_analytics(self, cagnotte_data: Dict[str, Any]):
-        """Insérer les données analytiques de cagnotte (méthode héritée)"""
-        if not self.db_connection:
-            self.db_connection = self.get_db_connection()
-            if not self.db_connection:
-                return False
-
-        try:
-            with self.db_connection.cursor() as cur:
-                # Adaptez cette requête selon votre schéma de base
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS cagnotte_analytics (
-                        cagnotte_id VARCHAR(255) PRIMARY KEY,
-                        name VARCHAR(255),
-                        total_solde DECIMAL(10,2),
-                        current_solde DECIMAL(10,2),
-                        type VARCHAR(100),
-                        completion_rate DECIMAL(5,2),
-                        created_at TIMESTAMP DEFAULT NOW(),
-                        updated_at TIMESTAMP DEFAULT NOW()
-                    );
-                """)
-                
-                cur.execute("""
-                    INSERT INTO cagnotte_analytics 
-                    (cagnotte_id, name, total_solde, current_solde, type, completion_rate, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-                    ON CONFLICT (cagnotte_id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        total_solde = EXCLUDED.total_solde,
-                        current_solde = EXCLUDED.current_solde,
-                        type = EXCLUDED.type,
-                        completion_rate = EXCLUDED.completion_rate,
-                        updated_at = NOW();
-                """, (
-                    cagnotte_data.get('id'),
-                    cagnotte_data.get('name'),
-                    cagnotte_data.get('total_solde', 0),
-                    cagnotte_data.get('current_solde', 0),
-                    cagnotte_data.get('type'),
-                    cagnotte_data.get('completion_rate', 0)
-                ))
-            self.db_connection.commit()
-            logger.info(f"✅ Données sauvegardées pour cagnotte {cagnotte_data.get('id')}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Erreur lors de la sauvegarde: {e}")
-            self.db_connection.rollback()
-            # Reconnexion en cas d'erreur
-            self.db_connection = None
-            return False
-
     def process_cagnotte_message(self, topic: str, message_value: Dict[str, Any]) -> bool:
         """Traiter les messages selon le topic"""
         try:
@@ -584,42 +532,15 @@ class CagnotteAnalyticsConsumer:
             logger.error(f"❌ Erreur lors du traitement du message: {e}")
             return False
 
-    def handle_create_cagnotte(self, message_value: Dict[str, Any]) -> bool:
+    def handle_create_cagnotte(self, message_value: dict) -> bool:
         """
         Traiter la création d'une cagnotte
-        - Enregistre une vue analytique avec des données agrégées.
         - Enregistre les données brutes dans une table pour un accès complet.
         """
         try:
             logger.info(f"📥 Message reçu du topic: {message_value}")
             
-            # 1. Enregistrement dans la table analytique (logique métier)
-            # Adapté au nouveau schéma (utilisant total_solde et current_solde)
-            # Assurez-vous que ces valeurs existent dans le message avant de les utiliser
-            total_solde = message_value.get('total_solde', 0)
-            current_solde = message_value.get('current_solde', 0)
-            
-            cagnotte_data = {
-                'id': message_value.get('id'),
-                'name': message_value.get('name', 'Unknown'),
-                'total_solde': total_solde,
-                'current_solde': current_solde,
-                'type': message_value.get('type', 'Unknown'),
-                'completion_rate': 0
-            }
-
-            # Calcul du taux de completion
-            if total_solde and total_solde > 0:
-                cagnotte_data['completion_rate'] = (current_solde / total_solde) * 100
-
-            logger.info(f"📥 Cagnotte analytique: {cagnotte_data}")
-            logger.info(f"📊 Nouvelle cagnotte: {cagnotte_data['name']} ({cagnotte_data['completion_rate']:.1f}%)")
-
-            # Sauvegarder dans la table analytique (hypothétique)
-            analytics_success = self.insert_cagnotte_analytics(cagnotte_data)
-            
-            # 2. Enregistrement brut des données originales
-            # Créer un dictionnaire de données qui correspond exactement au nouveau schéma de la table "cagnottes"
+            # Enregistrement brut des données originales
             raw_data = {
                 "id": message_value.get("id"),
                 "name": message_value.get("name"),
@@ -628,9 +549,8 @@ class CagnotteAnalyticsConsumer:
                 "date_end": message_value.get("date_end"),
                 "objectif": message_value.get("objectif"),
                 "statut": message_value.get("statut"),
-                # Extraction des UUIDs des objets imbriqués pour les colonnes TEXT
-                "id_categorie": message_value.get("categorie", {}).get("id"),
-                "admin": message_value.get("admin", {}).get("id"), # Supposant que l'admin a un ID
+                "categorie": message_value.get("categorie"),
+                "admin": message_value.get("admin"),
                 "type": message_value.get("type"),
                 "created_date": message_value.get("created_date"),
                 "last_modified_date": message_value.get("last_modified_date"),
@@ -645,13 +565,12 @@ class CagnotteAnalyticsConsumer:
             # Filtrer les valeurs None pour éviter des erreurs d'insertion
             raw_data = {k: v for k, v in raw_data.items() if v is not None}
             
-            raw_success = self.insert_dynamic_data("cagnottes", raw_data)
-            
-            return analytics_success and raw_success
+            # Appel de la nouvelle méthode pour effectuer l'insertion
+            return self.insert_dynamic_data("cagnottes", raw_data)
 
         except Exception as e:
             logger.error(f"❌ Erreur dans handle_create_cagnotte: {e}")
-            logger.error(f"📋 Traceback: {traceback.format_exc()}")
+            # import traceback; logger.error(f"📋 Traceback: {traceback.format_exc()}")
             return False
 
     def handle_update_cagnotte(self, message_value: Dict[str, Any]) -> bool:
@@ -1018,11 +937,9 @@ async def get_cached_videos(redis_client: redis.Redis = Depends(get_redis)):
             mapped_video_data = {
                 "video_id": video.get("video_id"),
                 "cagnotte_id": cagnotte_id,
-                "score": video.get("popularity_score", 0),
-                "views": video.get("event_breakdown", {}).get("video_view", 0),
-                "shares": video.get("event_breakdown", {}).get("video_share", 0),
-                "favorites": video.get("event_breakdown", {}).get("video_favorite", 0),
-                "skips": video.get("event_breakdown", {}).get("video_skip", 0),
+                "trending_score": video.get("trending_score", 0),
+                "velocity_percent": video.get("velocity_percent", 0),
+                "trend_direction": video.get("trend_direction", 0),
             }
             
             video_model = models.VideoDetails.model_validate(mapped_video_data)

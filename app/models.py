@@ -7,23 +7,56 @@ from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 
 
+class StatutCagnotte(str, Enum):
+    # Ajoutez ici les statuts possibles de votre cagnotte
+    # Exemple :
+    EN_COURS = "EN_COURS"
+    TERMINEE = "TERMINEE"
+    ANNULEE = "ANNULEE"
+
+class TypeCagnotte(str, Enum):
+    PUBLIC = "PUBLIC"
+    PRIVE = "PRIVE"
+
 class CagnotteDetails(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    objectif: Optional[int] = None
-    statut: Optional[str] = None
-    type: Optional[str] = None
-    pays: Optional[str] = None
+    id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4)
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = Field(None)
+    pays: str = Field("Mali", max_length=100)
+    date_start: Optional[datetime] = Field(None)
+    date_end: Optional[datetime] = Field(None)
+    objectif: Optional[int] = Field(None, ge=0)
+    total_solde: int = Field(0, ge=0)
+    current_solde: int = Field(0, ge=0)
+    statut: Optional[StatutCagnotte] = Field(None)
+    type: TypeCagnotte = Field(TypeCagnotte.PUBLIC)
+    
+    # Relations avec d'autres modèles (pas de validation automatique des types)
+    # Pydantic ne valide pas les instances d'autres classes par défaut. 
+    # Vous devrez les importer si elles sont nécessaires.
+    id_categorie: Optional[uuid.UUID] = Field(None)
+    admin: Optional[uuid.UUID] = Field(None) # Représenté par son UUID
+    
+    created_date: Optional[datetime] = Field(None)
+    last_modified_date: Optional[datetime] = Field(None)
+    deleted: bool = Field(False)
+    
 
 class VideoDetails(BaseModel):
-    video_id: str
-    cagnotte_id: str
-    score: float
-    views: int
-    shares: int
-    favorites: int
-    skips: int
+    video_id: Optional[str] = None
+    cagnotte_id: Optional[str] = None
+    score: Optional[float] = None
+    views: Optional[int] = None
+    shares: Optional[int] = None
+    favorites: Optional[int] = None
+    skips: Optional[int] = None
+    trending_score: Optional[float] = None
+    # current_score: Optional[float] = None
+    # previous_score: Optional[float] = None
+    velocity_percent: Optional[float] = None
+    # recent_events: Optional[int] = None
+    # comparison_events: Optional[int] = None
+    trend_direction: Optional[str] = None
     cagnotte_details: Optional[CagnotteDetails] = None
     
 class VideoList(BaseModel):
