@@ -17,6 +17,7 @@ import psycopg2
 from psycopg2 import sql, extras
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError, NoBrokersAvailable, KafkaTimeoutError
+from dotenv import load_dotenv
 
 # Imports de votre application existante
 import crud
@@ -28,7 +29,18 @@ from pydantic import BaseModel, Field, EmailStr
 import random
 
 
+################### LOGS ########################
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+################### LOGS ########################
 
+
+
+################### SCHEMA ########################
 # Schémas de tables prédéfinis
 TABLE_SCHEMAS = {
     "users": {
@@ -51,56 +63,45 @@ TABLE_SCHEMAS = {
      "cagnottes": {
         "id": "TEXT PRIMARY KEY",
         "name": "TEXT",
-        "description": "TEXT",
-        "date_start": "TIMESTAMP",
-        "date_end": "TIMESTAMP",
-        "objectif": "INTEGER",
-        "statut": "TEXT",
         "categorie": "TEXT",
+        "description": "TEXT",
+        "pays": "TEXT",
         "admin": "TEXT",
-        "type": "TEXT",
-        "created_date": "TIMESTAMP",
-        "last_modified_date": "TIMESTAMP",
-        "deleted": "BOOLEAN",
+        "date_start": "TEXT",
+        "date_end": "TEXT",
+        "objectif": "INTEGER",
+        "total_contributors": "INTEGER",
         "total_solde": "INTEGER",
         "current_solde": "INTEGER",
-        "pays": "TEXT",
-        "total_contributors": "INTEGER",
+        "type": "TEXT",
+        "statut": "TEXT",
+        "commission": "FLOAT",
+        "created_date": "TEXT",
+        "last_modified_date": "TEXT",
+        "deleted": "BOOLEAN",
         "total_contributed": "INTEGER",
-        "updated_at": "TIMESTAMP DEFAULT NOW()"
+        # "updated_at": "TIMESTAMP DEFAULT NOW()"
     }
 }
+################### SCHEMA ########################
 
-# Configuration du logging
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
+################### CONFIGURATION ########################
+load_dotenv() 
 # --- Configuration globale ---
 KAFKA_CONFIG = {
-    'bootstrap_servers': os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
-    'topics': ["create-cagnotte", "update-cagnotte", "create-user"],  # Ajout du topic create-user
+    'bootstrap_servers': os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
+    'topics': ["create-cagnotte", "update-cagnotte", "delete-cagnotte", "create-user"],  # Ajout du topic create-user
     'group_id': "fastapi-analytics-consumer"
 }
 
 DB_CONFIG = {
-    'host': os.environ.get("DB_HOST", "localhost"),
-    'database': os.environ.get("DB_NAME", "postgres"),
-    'user': os.environ.get("DB_USER", "postgres"),
-    'password': os.environ.get("DB_PASSWORD", "postgres"),
-    'port': os.environ.get("DB_PORT", "5432")
+    'host': os.getenv("DB_HOST"),
+    'database': os.getenv("DB_NAME"),
+    'user': os.getenv("DB_USER"),
+    'password': os.getenv("DB_PASSWORD"),
+    'port': os.getenv("DB_PORT")
 }
-
-def get_db_connection3():
-    """Crée et renvoie une nouvelle connexion à la base de données PostgreSQL."""
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        return conn
-    except psycopg2.OperationalError as e:
-        logger.error(f"❌ Erreur de connexion à la base de données : {e}")
-        return None
 
 # --- Configuration de Redis (Utilisation asynchrone) ---
 REDIS_URL = "redis://localhost:6379"
@@ -108,6 +109,43 @@ REDIS_URL = "redis://localhost:6379"
 async def get_redis():
     """Dépendance qui fournit une connexion Redis asynchrone."""
     return redis.from_url(REDIS_URL, decode_responses=True)
+
+
+#     ################### CONNECTION ########################
+#     connection_pool: pool.ThreadedConnectionPool = None
+
+#     @app.on_event("startup")
+#     def startup_event():
+#         global connection_pool
+#         connection_pool = pool.ThreadedConnectionPool(
+#             minconn=1,
+#             maxconn=10,  # ajuste selon la charge et tes workers gunicorn
+#             host=os.environ.get("DB_HOST", "localhost"),
+#             database=os.environ.get("DB_NAME", "postgres"),
+#             user=os.environ.get("DB_USER", "postgres"),
+#             password=os.environ.get("DB_PASSWORD", "postgres"),
+#             port=os.environ.get("DB_PORT", "5432")
+#         )
+#         print("✅ Pool de connexions initialisé")
+
+#     @app.on_event("shutdown")
+#     def shutdown_event():
+#         global connection_pool
+#         if connection_pool:
+#             connection_pool.closeall()
+#             print("❌ Pool de connexions fermé")
+
+
+#     def get_db_connection():
+#         """Dépendance FastAPI qui fournit une connexion"""
+#         conn = connection_pool.getconn()
+#         try:
+#             yield conn
+#         finally:
+#             connection_pool.putconn(conn)
+# ################### CONNECTION ########################
+################### CONFIGURATION ########################
+
 
 # Variable globale pour contrôler le consumer
 consumer_instance = None
@@ -121,6 +159,7 @@ class CagnotteAnalyticsConsumer:
         self.message_count = 0
         self.running = False
 
+################### CONNECTION ########################
     def get_db_connection(self):
         """Établir une connexion à la base de données"""
         try:
@@ -130,7 +169,10 @@ class CagnotteAnalyticsConsumer:
         except Exception as e:
             logger.error(f"❌ Erreur de connexion à la base de données: {e}")
             return None
+################### CONNECTION ########################
 
+
+################### INITIALISE CONSUMER ########################
     def create_consumer(self) -> bool:
         """Créer un consumer Kafka"""
         try:
@@ -153,7 +195,10 @@ class CagnotteAnalyticsConsumer:
         except Exception as e:
             logger.error(f"❌ Erreur lors de la création du consumer: {e}")
             return False
+################### INITIALISE CONSUMER ########################
 
+
+################### TABLE ########################
     def create_table_from_schema(self, table_name: str):
         """Créer une table basée sur un schéma prédéfini"""
         if not self.db_connection:
@@ -253,7 +298,10 @@ class CagnotteAnalyticsConsumer:
         #     logger.info(f"✅ {columns_added} colonnes ajoutées à la table '{table_name}'")
         # else:
         #     logger.debug(f"✅ Toutes les colonnes du schéma existent dans '{table_name}'")
-
+################### TABLE ########################
+   
+   
+################### TABLE DYNAMIQUE ########################
     def create_table_from_data(self, table_name: str, data: Dict[str, Any]):
         """Créer une table - d'abord essayer le schéma prédéfini, sinon dynamique"""
         # D'abord essayer avec le schéma prédéfini
@@ -392,124 +440,10 @@ class CagnotteAnalyticsConsumer:
             self.db_connection.rollback()
             self.db_connection = None
             return False
+################### TABLE DYNAMIQUE ########################
 
-    def insert_user_data(self, user_data: Dict[str, Any]):
-        """Insérer les données utilisateur avec mapping des champs"""
-        if not self.db_connection:
-            self.db_connection = self.get_db_connection()
-            if not self.db_connection:
-                return False
 
-        try:
-            # Créer/vérifier la table avec le schéma prédéfini
-            if not self.create_table_from_schema("users"):
-                logger.error("❌ Impossible de créer la table users")
-                return False
-
-            with self.db_connection.cursor() as cur:
-                # Mapping des champs reçus vers le schéma de la base
-                mapped_data = self._map_user_fields(user_data)
-                
-                # Préparer l'insertion
-                columns = []
-                values = []
-                placeholders = []
-                
-                for key, value in mapped_data.items():
-                    columns.append(f'"{key}"')
-                    values.append(value)
-                    placeholders.append("%s")
-                
-                # # Ajouter updated_at
-                # columns.append("updated_at")
-                # placeholders.append("NOW()")
-                
-                # Construction de la requête d'insertion
-                insert_sql = f"""
-                    INSERT INTO "users" ({', '.join(columns)}) 
-                    VALUES ({', '.join(placeholders)});
-                """
-                
-                logger.debug(f"🔧 SQL utilisateur: {insert_sql}")
-                logger.debug(f"🔧 Valeurs: {values}")
-                
-                cur.execute(insert_sql, values)
-                
-            self.db_connection.commit()
-            logger.info(f"✅ Utilisateur inséré dans la table 'users' (entity_id: {user_data.get('id', 'N/A')})")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur lors de l'insertion utilisateur: {e}")
-            logger.error(f"📋 Données reçues: {user_data}")
-            logger.error(f"📋 Traceback: {traceback.format_exc()}")
-            self.db_connection.rollback()
-            self.db_connection = None
-            return False
-
-    def _map_user_fields(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Mapper les champs reçus vers le schéma de la base de données"""
-        mapped = {}
-        # Mapping des champs
-        field_mapping = {
-            'id': 'id',
-            'firstName': 'firstName',
-            'lastName': 'lastName',
-            'email': 'email',
-            'phone': 'phone',
-            'statut': 'statut',
-            'confirmed': 'confirmed',
-            'role': 'role',
-            'deleted': 'deleted',
-            'createdDate': 'createdDate',
-            'lastModifiedDate': 'lastModifiedDate',
-            # 'picture': 'picture',
-            # 'myCodeParrain': 'myCodeParrain',
-            # 'codeParrain': 'codeParrain',
-            # 'pointFidelite': 'pointFidelite',
-        }
-
-        def convert_to_datetime(date_list):
-            """Convertit une liste de date [année, mois, jour, ...] en un objet datetime."""
-            if not date_list:
-                return None
-            # La 7ème valeur est en nanosecondes. On la convertit en microsecondes.
-            return datetime(
-                date_list[0], 
-                date_list[1], 
-                date_list[2], 
-                date_list[3], 
-                date_list[4], 
-                date_list[5], 
-                date_list[6] // 1000
-            )
-        
-        # Appliquer le mapping
-        for source_field, target_field in field_mapping.items():
-            if source_field in user_data:
-                value = user_data[source_field]
-                
-                # Traiter spécifiquement les champs de date
-                if source_field in ['createdDate', 'lastModifiedDate']:
-                    value = convert_to_datetime(value)
-                
-                mapped[target_field] = value        
-        # # Appliquer le mapping
-        # for source_field, target_field in field_mapping.items():
-        #     if source_field in user_data:
-        #         mapped[target_field] = user_data[source_field]
-        
-        # # Valeurs par défaut pour les champs manquants
-        # if 'created_date' not in mapped:
-        #     mapped['created_date'] = 'NOW()'
-        # if 'last_modified_date' not in mapped:
-        #     mapped['last_modified_date'] = 'NOW()'
-        # if 'deleted' not in mapped:
-        #     mapped['deleted'] = False
-        
-        logger.debug(f"🔄 Mapping utilisateur: {user_data} -> {mapped}")
-        return mapped
-
+################### REDIRECT TOPICS ########################
     def process_cagnotte_message(self, topic: str, message_value: Dict[str, Any]) -> bool:
         """Traiter les messages selon le topic"""
         try:
@@ -522,6 +456,8 @@ class CagnotteAnalyticsConsumer:
                 return self.handle_create_cagnotte(message_value)
             elif topic == "update-cagnotte":
                 return self.handle_update_cagnotte(message_value)
+            elif topic == "delete-cagnotte":
+                return self.handle_delete_cagnotte(message_value)
             elif topic == "create-user":
                 return self.handle_create_user(message_value)
             else:
@@ -531,6 +467,8 @@ class CagnotteAnalyticsConsumer:
         except Exception as e:
             logger.error(f"❌ Erreur lors du traitement du message: {e}")
             return False
+################### REDIRECT TOPICS ########################
+
 
     def handle_create_cagnotte(self, message_value: dict) -> bool:
         """
@@ -539,27 +477,31 @@ class CagnotteAnalyticsConsumer:
         """
         try:
             logger.info(f"📥 Message reçu du topic: {message_value}")
-            
+
+            # # Filtrer les valeurs None directement du message original
+            # data_to_insert = {k: v for k, v in message_value.items() if v is not None}
+	
             # Enregistrement brut des données originales
             raw_data = {
                 "id": message_value.get("id"),
                 "name": message_value.get("name"),
                 "description": message_value.get("description"),
-                "date_start": message_value.get("date_start"),
-                "date_end": message_value.get("date_end"),
+                "categorie": message_value.get("categorie"),
+                "pays": message_value.get("pays"),
+                "admin": message_value.get("admin"),
+                "date_start": message_value.get("dateStart"),
+                "date_end": message_value.get("dateEnd"),
                 "objectif": message_value.get("objectif"),
                 "statut": message_value.get("statut"),
-                "categorie": message_value.get("categorie"),
-                "admin": message_value.get("admin"),
                 "type": message_value.get("type"),
-                "created_date": message_value.get("created_date"),
-                "last_modified_date": message_value.get("last_modified_date"),
-                "deleted": message_value.get("deleted"),
-                "total_solde": message_value.get("total_solde"),
-                "current_solde": message_value.get("current_solde"),
-                "pays": message_value.get("pays"),
-                "total_contributors": message_value.get("total_contributors"),
-                "total_contributed": message_value.get("total_contributed")
+                "created_date": message_value.get("createdDate"),
+                "last_modified_date": message_value.get("lastModifiedDate"),
+                # "deleted": message_value.get("deleted"),
+                "total_solde": message_value.get("totalSolde"),
+                "current_solde": message_value.get("currentSolde"),
+                "total_contributors": message_value.get("totalContributors"),
+                # "created_date": message_value.get("")
+                # "total_contributed": message_value.get("total_contributed")
             }
             
             # Filtrer les valeurs None pour éviter des erreurs d'insertion
@@ -638,6 +580,72 @@ class CagnotteAnalyticsConsumer:
         else:
             logger.debug(f"✅ Toutes les colonnes nécessaires existent dans '{table_name}'")
 
+
+
+################### USER ########################
+    def _map_user_fields(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Mapper les champs reçus vers le schéma de la base de données"""
+        mapped = {}
+        # Mapping des champs
+        field_mapping = {
+            'id': 'id',
+            'firstName': 'firstName',
+            'lastName': 'lastName',
+            'email': 'email',
+            'phone': 'phone',
+            'statut': 'statut',
+            'confirmed': 'confirmed',
+            'role': 'role',
+            'deleted': 'deleted',
+            'createdDate': 'createdDate',
+            'lastModifiedDate': 'lastModifiedDate',
+            # 'picture': 'picture',
+            # 'myCodeParrain': 'myCodeParrain',
+            # 'codeParrain': 'codeParrain',
+            # 'pointFidelite': 'pointFidelite',
+        }
+
+        def convert_to_datetime(date_list):
+            """Convertit une liste de date [année, mois, jour, ...] en un objet datetime."""
+            if not date_list:
+                return None
+            # La 7ème valeur est en nanosecondes. On la convertit en microsecondes.
+            return datetime(
+                date_list[0], 
+                date_list[1], 
+                date_list[2], 
+                date_list[3], 
+                date_list[4], 
+                date_list[5], 
+                date_list[6] // 1000
+            )
+        
+        # Appliquer le mapping
+        for source_field, target_field in field_mapping.items():
+            if source_field in user_data:
+                value = user_data[source_field]
+                
+                # Traiter spécifiquement les champs de date
+                if source_field in ['createdDate', 'lastModifiedDate']:
+                    value = convert_to_datetime(value)
+                
+                mapped[target_field] = value        
+        # # Appliquer le mapping
+        # for source_field, target_field in field_mapping.items():
+        #     if source_field in user_data:
+        #         mapped[target_field] = user_data[source_field]
+        
+        # # Valeurs par défaut pour les champs manquants
+        # if 'created_date' not in mapped:
+        #     mapped['created_date'] = 'NOW()'
+        # if 'last_modified_date' not in mapped:
+        #     mapped['last_modified_date'] = 'NOW()'
+        # if 'deleted' not in mapped:
+        #     mapped['deleted'] = False
+        
+        logger.debug(f"🔄 Mapping utilisateur: {user_data} -> {mapped}")
+        return mapped
+
     def handle_create_user(self, message_value: Dict[str, Any]) -> bool:
         """Traiter la création d'un utilisateur avec le schéma prédéfini"""
         try:
@@ -660,6 +668,63 @@ class CagnotteAnalyticsConsumer:
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
             return False
 
+    def insert_user_data(self, user_data: Dict[str, Any]):
+        """Insérer les données utilisateur avec mapping des champs"""
+        if not self.db_connection:
+            self.db_connection = self.get_db_connection()
+            if not self.db_connection:
+                return False
+
+        try:
+            # Créer/vérifier la table avec le schéma prédéfini
+            if not self.create_table_from_schema("users"):
+                logger.error("❌ Impossible de créer la table users")
+                return False
+
+            with self.db_connection.cursor() as cur:
+                # Mapping des champs reçus vers le schéma de la base
+                mapped_data = self._map_user_fields(user_data)
+                
+                # Préparer l'insertion
+                columns = []
+                values = []
+                placeholders = []
+                
+                for key, value in mapped_data.items():
+                    columns.append(f'"{key}"')
+                    values.append(value)
+                    placeholders.append("%s")
+                
+                # # Ajouter updated_at
+                # columns.append("updated_at")
+                # placeholders.append("NOW()")
+                
+                # Construction de la requête d'insertion
+                insert_sql = f"""
+                    INSERT INTO "users" ({', '.join(columns)}) 
+                    VALUES ({', '.join(placeholders)});
+                """
+                
+                logger.debug(f"🔧 SQL utilisateur: {insert_sql}")
+                logger.debug(f"🔧 Valeurs: {values}")
+                
+                cur.execute(insert_sql, values)
+                
+            self.db_connection.commit()
+            logger.info(f"✅ Utilisateur inséré dans la table 'users' (entity_id: {user_data.get('id', 'N/A')})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'insertion utilisateur: {e}")
+            logger.error(f"📋 Données reçues: {user_data}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
+            self.db_connection.rollback()
+            self.db_connection = None
+            return False
+################### USER ########################
+
+
+################### CONSUMER ########################
     def start_consuming(self):
         """Démarrer l'écoute des messages dans un thread séparé"""
         if not self.consumer:
@@ -754,6 +819,10 @@ def stop_kafka_consumer():
     if consumer_thread and consumer_thread.is_alive():
         consumer_thread.join(timeout=10)
         logger.info("✅ Thread consumer arrêté")
+################### CONSUMER ########################
+
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -785,59 +854,10 @@ app = FastAPI(
 def read_root():
     return {"message": "Bienvenue sur l'API de recommandation de cagnottes !"}
 
-@app.get(
-    "/rankings", 
-    response_model=List[models.VideoDetails],
-    summary="Récupérer le top des vidéos classées"
-)
-async def get_top_videos(
-    limit: int = Query(50, ge=1, le=100, description="Nombre de vidéos à récupérer"),
-    redis: redis.Redis = Depends(get_redis)
-):
-    """
-    Cet endpoint récupère les ID des vidéos les mieux classées depuis le sorted set `video_rankings`,
-    puis charge les détails de chaque vidéo depuis les hashes correspondants en utilisant un pipeline Redis pour des performances optimales.
-    """
-    try:
-        # Étape 1: Récupérer les ID des vidéos classées (du score le plus haut au plus bas)
-        # On utilise ZRANGE avec desc=True, ce qui est l'équivalent de ZREVRANGE.
-        # On récupère les `limit` premiers éléments (indices de 0 à limit-1).
-        video_ids = await redis.zrange("video_rankings", 0, limit - 1, desc=True)
-
-        if not video_ids:
-            return [] # Retourne une liste vide si le classement n'existe pas
-
-        # Étape 2: Utiliser un pipeline pour récupérer tous les détails en une seule fois
-        pipe = redis.pipeline()
-        for video_id in video_ids:
-            pipe.hgetall(f"video:{video_id}")
-        
-        # Exécuter le pipeline : une seule communication réseau avec Redis
-        video_data_list = await pipe.execute()
-
-        # Étape 3: Formater la réponse
-        # Pydantic va automatiquement convertir les types (ex: str -> int)
-        results = []
-        for data in video_data_list:
-            if data:  # S'assurer que le hash n'était pas vide ou supprimé
-                results.append(models.VideoDetails(**data))
-
-        return results
-
-    except Exception as e:
-        # Loggez l'erreur de manière appropriée dans une application réelle
-        print(f"❌ Erreur lors de la récupération depuis Redis: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail="Impossible de récupérer le classement depuis Redis."
-        )
-    
-
-
 
 # Nouvel endpoint pour récupérer les données en cache et les enrichir
 @app.get(
-    "/api/videos/cached",
+    "/api/cagnottes/cached",
     response_model=models.VideoList,
     summary="Récupérer les vidéos populaires et tendances depuis le cache Redis et les enrichir avec les détails de cagnotte"
 )
@@ -877,7 +897,7 @@ async def get_cached_videos(redis_client: redis.Redis = Depends(get_redis)):
         cagnottes_map = {}
         if cagnotte_ids:
             # Étape 3: Récupérer les données complètes des cagnottes depuis PostgreSQL
-            conn = get_db_connection3()
+            conn = get_db_connection()
             if not conn:
                 raise HTTPException(status_code=500, detail="Erreur de connexion à la base de données.")
                 
@@ -973,7 +993,7 @@ async def get_cached_videos(redis_client: redis.Redis = Depends(get_redis)):
 
 
 @app.get(
-    "/api/videos/combined",
+    "/api/cagnottes/popular_trending",
     response_model=List[models.VideoDetails],
     summary="Récupérer un flux de vidéos combiné et mélangé (populaires et tendances)"
 )
@@ -1025,47 +1045,6 @@ def health_check():
         "topics": KAFKA_CONFIG['topics']
     }
 
-@app.get(
-    "/recommendations/{user_id}",
-    response_model=List[models.RecommandationResult],
-    summary="Obtenir des recommandations pour un utilisateur"
-)
-def get_recommendations(user_id: str, limit: int = 5):
-    """
-    Retourne une liste de cagnottes recommandées pour un utilisateur donné.
-         
-    - **user_id**: L'ID de l'utilisateur.
-    - **limit**: Le nombre de recommandations à retourner.
-    """
-         
-    # Étape 1: Récupérer le catalogue de cagnottes
-    cagnottes = crud.get_cagnottes_from_db()
-    if not cagnottes:
-        raise HTTPException(status_code=503, detail="Service de base de données indisponible.")
-
-    # Étape 2: Récupérer le profil de l'utilisateur
-    user_profile = crud.get_user_profile_from_db(user_id)
-         
-    # Étape 3: Exécuter la logique de recommandation
-    if user_profile:
-        # Recommandation par préférences si un profil existe
-        recommended_cagnottes = engine.recommander_videos_par_preferences(user_profile, cagnottes, limit)
-    else:
-        # Stratégie de repli par popularité si aucun profil n'existe
-        recommended_cagnottes = engine.recommander_videos_par_popularite(cagnottes, limit)
-             
-    # Étape 4: Formater la réponse en utilisant le modèle Pydantic
-    results = []
-    for cagnotte in recommended_cagnottes:
-        results.append(models.RecommandationResult(
-            id=cagnotte['id'],
-            titre=cagnotte['titre'],
-            description=cagnotte['description'],
-            categorie=cagnotte['categorie'],
-            score_reco=cagnotte.get('score_calculé', 0)
-        ))
-             
-    return results
 
 @app.get("/admin/tables")
 def list_database_tables():
@@ -1112,28 +1091,6 @@ def get_consumer_stats():
         "group_id": KAFKA_CONFIG['group_id'],
         "bootstrap_servers": KAFKA_CONFIG['bootstrap_servers']
     }
-
-@app.post("/admin/test-user")
-def test_user_insertion():
-    """Tester l'insertion d'un utilisateur manuellement"""
-    test_data = {
-        "id": "test-123-456",
-        "firstName": "Test",
-        "lastName": "User",
-        "email": "test@example.com",
-        "phone": "+1234567890",
-        "role": "USER",
-        "confirmed": True,
-        "statut": "ACTIVE",
-        "pointFidelite": 100
-    }
-    
-    global consumer_instance
-    if consumer_instance:
-        success = consumer_instance.handle_create_user(test_data)
-        return {"success": success, "test_data": test_data}
-    else:
-        return {"error": "Consumer non disponible"}
 
 # Point d'entrée pour le développement
 if __name__ == "__main__":

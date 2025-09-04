@@ -7,6 +7,22 @@ from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 
 
+
+# Ce modèle valide chaque événement individuel dans le lot.
+class EventModel(BaseModel):
+    event_id: int
+    event_type: str
+    timestamp: str
+    user_id: str
+    user_type: str
+    cagnotte_id: str
+    video_id: str | None = None  # Optionnel, car pas présent dans tous les events
+    categorie: str
+    pays: str
+    
+class EventBatchModel(BaseModel):
+    events: List[EventModel] = Field(..., min_length=1)
+
 class StatutCagnotte(str, Enum):
     # Ajoutez ici les statuts possibles de votre cagnotte
     # Exemple :

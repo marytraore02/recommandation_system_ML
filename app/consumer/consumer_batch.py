@@ -1,4 +1,3 @@
-# profile_builder_consumer.py
 import asyncio
 import json
 import logging
@@ -42,11 +41,12 @@ def update_user_profile(events: list):
             event_type = event.get("event_type")
             weight = EVENT_WEIGHTS.get(event_type)
 
-            if weight is None: # Si l'événement n'est pas dans notre dictionnaire de poids
+            if weight is None:
                 continue
 
-            category = event.get("categorie")
-            if not category:
+            # On récupère l'ID de la catégorie directement depuis le champ 'categorie'
+            category_id = event.get("id_categorie")
+            if not category_id:
                 continue
 
             # Déterminer si l'utilisateur est authentifié ou anonyme
@@ -65,9 +65,10 @@ def update_user_profile(events: list):
                 continue
 
             # HINCRBYFLOAT met à jour le score pour une catégorie dans le profil de l'utilisateur
-            # C'est atomique et très performant
-            pipe.hincrbyfloat(redis_key, category, weight)
-            logger.info(f"User '{redis_key}' interest in '{category}' updated by {weight}")
+            # On utilise l'ID de la catégorie comme clé de champ
+            pipe.hincrbyfloat(redis_key, category_id, weight)
+            logger.info(f"User '{redis_key}' interest in category ID '{category_id}' updated by {weight}")
+
 
         pipe.execute()
 
