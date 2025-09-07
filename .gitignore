@@ -6,7 +6,7 @@ app/__pycache__/
 
 app/recommender/__pycache__
 app/recommender/__init__.py
-
+app/.env
 venv/
 env/
 .env
