@@ -22,6 +22,7 @@ class TypeRessource(str, enum.Enum):
 class StatutCagnotte(str, enum.Enum):
     EN_COURS = "EN_COURS"
     VALIDE = "VALIDE"
+    SUSPENDU = "SUSPENDU"
 
 class TypeCagnotte(str, enum.Enum):
     PUBLIC = "PUBLIC"

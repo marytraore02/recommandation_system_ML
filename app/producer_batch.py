@@ -6,8 +6,9 @@ from typing import List, Dict, Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, Session
+from sqlalchemy.orm import selectinload
 import uuid as uuid_pkg
-from sqlalchemy import select
+from sqlalchemy import select, func, union_all
 
 from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, HTTPException, Query, status, Depends
@@ -29,7 +30,6 @@ from models import RessourceModel, CagnottePostModel, CagnotteModel, UserModel, 
 from schemas import RessourceEnrichie, CagnottePost, Ressource, Author, Cagnotte, Categorie
 
 
-
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,48 +37,43 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
-KAFKA_TOPIC = "user-events-topic"
-
-REDIS_HOST = "localhost"
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("deme_user_service")
-DB_HOST = os.getenv("DB_HOST")
+KAFKA_TOPIC_USER_EVENT = os.getenv("KAFKA_TOPIC_USER_EVENT")
 
 
-# Le gestionnaire de cycle de vie (lifespan)
+# ===================================================================
+#OPTIMISATION 1: Gérer le producteur Kafka via le cycle de vie de l'app
+# ===================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Application startup...")
+    logger.info("🚀 Démarrage de l'application FastAPI...")
     
     # --- Initialisation ---
-    # 1. Vérifier la connexion Redis
+    # 1. Connexion à Redis
     await redis_connection_pool.ping()
-    print("Connexion à Redis réussie !")
+    logger.info("Connexion à Redis réussie !")
 
-    # 2. Créer les tables de la base de données (si elles n'existent pas)
-    print("Création des tables de la base de données...")
-    await create_db_and_tables()
-    print("Tables créées avec succès.")
+    # 2. Créer le producteur Kafka et le maintenir en vie
+    logger.info("Démarrage du producteur Kafka...")
+    app.state.kafka_producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+    await app.state.kafka_producer.start()
+    logger.info("Producteur Kafka démarré.")
     
     yield
     
+    logger.info("🛑 Arrêt de l'application...")
     # --- Nettoyage ---
-    print("Application shutdown...")
-    # 1. Fermer le pool Redis
+    # 1. Arrêter le producteur Kafka
+    logger.info("Arrêt du producteur Kafka...")
+    await app.state.kafka_producer.stop()
+    logger.info("Producteur Kafka arrêté.")
+
+    # 2. Fermer le pool Redis
     await redis_connection_pool.close()
-    print("Pool de connexions Redis fermé.")
+    logger.info("Pool de connexions Redis fermé.")
     
-    # 2. Fermer le pool de connexions de la base de données
+    # 3. Fermer le pool de connexions de la base de données
     await engine.dispose()
-    print("Pool de connexions de la base de données fermé.")
-
-    
-    print("Application shutdown...")
-    # Fermer proprement le pool de connexions Redis
-    await redis_connection_pool.close()
-    print("Pool de connexions Redis fermé.")
-
+    logger.info("Pool de connexions de la base de données fermé.")
 
 
 app = FastAPI(
@@ -88,78 +83,201 @@ app = FastAPI(
 )
 
 #===============================Methodes==========================
-# --- Logique Kafka ---
-async def get_kafka_producer():
-    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-    await producer.start()
-    return producer
+# Dépendance pour injecter le producteur Kafka dans les endpoints
+async def get_kafka_producer() -> AIOKafkaProducer:
+    return app.state.kafka_producer
 #===============================Methodes==========================
 
 
-
-
 #===============================Endpoints==========================
-# --- Point de Terminaison (Endpoint) ---
+
 @app.post(
     "/events/collect",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Accept a batch of user events"
 )
-async def accept_events(batch: schemas.EventBatchModel):
+async def accept_events(
+    batch: schemas.EventBatchModel,
+    producer: AIOKafkaProducer = Depends(get_kafka_producer) # Injection de dépendance
+):
     """
     Accepte un lot d'événements, les envoie à Kafka et répond immédiatement.
-    C'est un endpoint "fire-and-forget".
+    Utilise le producteur Kafka partagé pour une performance maximale.
     """
-    producer = None
     try:
-        producer = await get_kafka_producer()
-        logger.info(f"Received a batch of {len(batch.events)} events. Sending to Kafka topic '{KAFKA_TOPIC}'.")
+        logger.info(f"Received a batch of {len(batch.events)} events. Sending to Kafka topic '{KAFKA_TOPIC_USER_EVENT}'.")
 
-        # Préparation des messages pour Kafka de manière asynchrone
         tasks = []
         for event in batch.events:
-            # Sérialisation de l'événement en JSON
             message = event.model_dump_json().encode("utf-8")
-            tasks.append(producer.send(KAFKA_TOPIC, message))
+            tasks.append(producer.send(KAFKA_TOPIC_USER_EVENT, message))
         
-        # Envoi de tous les messages en parallèle
         await asyncio.gather(*tasks)
 
         logger.info("Batch successfully sent to Kafka.")
         return {"status": "accepted", "message": f"{len(batch.events)} events queued."}
 
     except Exception as e:
-        logger.error(f"Error connecting or sending to Kafka: {e}")
-        # Si Kafka est indisponible, on retourne une erreur 503
+        logger.error(f"Error sending to Kafka: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not send events to the processing queue. Please try again later."
         )
-    finally:
-        if producer:
-            await producer.stop()
 
 
+# ===================================================================
+# OPTIMISATION 2: Remplacer les requêtes en boucle par une seule requête SQL
+# ===================================================================
+@app.get("/recommendations/", response_model=List[schemas.Cagnotte])
+async def get_recommendations(
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    total_recommendations: int = 10,
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis_client)
+):
+    """
+    Génère une liste de cagnottes recommandées pour un utilisateur
+    en se basant sur son profil d'intérêt stocké dans Redis.
+    Cette version utilise une seule requête SQL pour une performance optimale.
+    """
+    if not user_id and not session_id:
+        raise HTTPException(status_code=400, detail="Un 'user_id' ou un 'session_id' doit être fourni.")
+    if user_id and session_id:
+        raise HTTPException(status_code=400, detail="Fournissez 'user_id' OU 'session_id', pas les deux.")
+        
+    redis_key = f"profile:user:{user_id}" if user_id else f"profile:session:{session_id}"
 
-# --- Fonctions de Logique ---
-async def get_top_categories_from_profile(user_key: str) -> List[str]:
-    profile = await redis_pool.hgetall(user_key)
-    if not profile:
+    user_profile = await redis_client.hgetall(redis_key)
+    if not user_profile:
         return []
+
+    sorted_categories = sorted(
+        user_profile.items(), key=lambda item: float(item[1]), reverse=True
+    )
+
+    # Création du plan de recommandation
+    recommendations_plan = []
+    # ... (logique de distribution inchangée)
+    if len(sorted_categories) >= 3:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]; top_cat_3, _ = sorted_categories[2]
+        num_cat_1 = round(total_recommendations * 0.5); num_cat_2 = round(total_recommendations * 0.3)
+        num_cat_3 = total_recommendations - num_cat_1 - num_cat_2
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2), (top_cat_3, num_cat_3)]
+    elif len(sorted_categories) == 2:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]
+        num_cat_1 = round(total_recommendations * 0.6); num_cat_2 = total_recommendations - num_cat_1
+        recommendations_plan = [(top_cat_1.decode('utf-8'), num_cat_1), (top_cat_2.decode('utf-8'), num_cat_2)]
+    elif len(sorted_categories) == 1:
+        top_cat_1, _ = sorted_categories[0]
+        recommendations_plan = [(top_cat_1.decode('utf-8'), total_recommendations)]
     
-    # Trier les catégories par score, du plus haut au plus bas
-    sorted_categories = sorted(profile.items(), key=lambda item: float(item[1]), reverse=True)
-    print(sorted_categories)
+    if not recommendations_plan:
+        return []
+
+    # Construction d'une seule requête UNION pour récupérer N cagnottes aléatoires par catégorie
+    # C'est beaucoup plus efficace que de faire une requête par catégorie.
+    union_queries = []
+    for category_id, num_to_fetch in recommendations_plan:
+        if num_to_fetch > 0:
+            sq = (
+                select(models.CagnotteModel)
+                .where(models.CagnotteModel.id_categorie == category_id)
+                .order_by(func.random())
+                .limit(num_to_fetch)
+            )
+            union_queries.append(sq)
+
+    if not union_queries:
+        return []   
+
+    # Combinaison de toutes les sous-requêtes
+    full_query = union_all(*union_queries).alias("all_cagnottes")
     
-    # Retourner les catégories avec un score positif
-    return [category for category, score in sorted_categories if float(score) > 0]
+    # Requête finale pour charger les objets complets avec leurs relations
+    final_stmt = (
+        select(models.CagnotteModel)
+        .options(
+            selectinload(models.CagnotteModel.categorie),
+            selectinload(models.CagnotteModel.admin)
+        )
+        .join(full_query, models.CagnotteModel.id == full_query.c.id)
+    )
 
-async def fetch_cagnottes(pool, query, *args):
-    async with pool.acquire() as connection:
-        return await connection.fetch(query, *args)
-#===============================Endpoints==========================
+    result = await db.execute(final_stmt)
+    final_recommendations = result.scalars().all()
+    
+    # Mélanger les résultats finaux pour que les catégories ne soient pas groupées
+    random.shuffle(final_recommendations)
+    
+    return final_recommendations
 
 
+# ===================================================================
+# OPTIMISATION 3: Ajouter la pagination à l'endpoint de ressources
+# ===================================================================
+@app.get("/ressources/", response_model=List[schemas.Ressource], tags=["Ressources"])
+async def get_all_ressources(
+    skip: int = Query(0, ge=0, description="Nombre d'éléments à sauter"),
+    limit: int = Query(100, ge=1, le=500, description="Nombre maximum d'éléments à retourner"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Récupère une liste paginée de ressources.
+    C'est la pratique recommandée pour éviter de surcharger le service.
+    """
+    query = select(models.RessourceModel).offset(skip).limit(limit)
+    result = await db.execute(query)
+    ressources = result.scalars().all()
+    return ressources
+
+
+
+@app.get("/ressources/{ressource_id}/enriched", response_model=RessourceEnrichie, tags=["Ressources"])
+async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Récupère une ressource et l'enrichit avec les détails du post,
+    incluant les informations sur l'auteur et la cagnotte.
+    """
+    # 1. Récupérer la ressource
+    result_res = await db.execute(select(RessourceModel).where(RessourceModel.id == ressource_id))
+    ressource = result_res.scalars().first()
+
+    if not ressource:
+        raise HTTPException(status_code=404, detail="Ressource non trouvée")
+
+    cagnotte_posts = None
+    if ressource.reference:
+        # 2. Construire la requête pour le post avec les jointures complètes
+        # Chaînage des joinedload pour charger les relations imbriquées
+        query = (
+            select(CagnottePostModel)
+            .options(
+                # Charger l'auteur du post
+                joinedload(CagnottePostModel.author), 
+                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.admin),
+                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.categorie)
+            )
+            .where(CagnottePostModel.id == ressource.reference)
+        )
+        
+        result_post = await db.execute(query)
+        post = result_post.scalars().first()
+        
+        if post:
+            # Assurez-vous d'utiliser `from_orm` ou `model_validate`
+            # pour transformer l'objet SQLAlchemy en Pydantic
+            cagnotte_posts = CagnottePost.from_orm(post)
+    
+    # 3. Construire la réponse enrichie
+    enriched_data = RessourceEnrichie(
+        # Utilisez le dictionnaire de l'objet Ressource pour les données de base
+        **ressource.__dict__,
+        # Assignez le post enrichi à la propriété correcte
+        cagnotte_posts=cagnotte_posts
+    )
+
+    return enriched_data
 
 
 

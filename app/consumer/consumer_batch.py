@@ -1,20 +1,26 @@
 import asyncio
 import json
+import os
 import logging
 import redis
 from aiokafka import AIOKafkaConsumer
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-KAFKA_TOPIC = "user-events-topic"
-KAFKA_BOOTSTRAP_SERVERS = "localhost:29092"
-KAFKA_CONSUMER_GROUP = "profile-builder-group"
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
+KAFKA_TOPIC_USER_EVENT = os.getenv("KAFKA_TOPIC_USER_EVENT")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+KAFKA_CONSUMER_GROUP_PROFIL = os.getenv("KAFKA_CONSUMER_GROUP_PROFIL")
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = os.getenv("REDIS_PORT")
+REDIS_DB = os.getenv("REDIS_DB")
+
 
 # Définition des poids pour chaque événement
 EVENT_WEIGHTS = {
@@ -28,7 +34,7 @@ EVENT_WEIGHTS = {
 
 # --- Connexion à Redis ---
 try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
     logger.info("Successfully connected to Redis.")
 except redis.exceptions.ConnectionError as e:
     logger.error(f"Could not connect to Redis: {e}")
@@ -73,9 +79,9 @@ def update_user_profile(events: List[Dict[str, Any]]):
 # --- Logique du Consumer ---
 async def consume_and_build_profiles():
     consumer = AIOKafkaConsumer(
-        KAFKA_TOPIC,
+        KAFKA_TOPIC_USER_EVENT,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        group_id=KAFKA_CONSUMER_GROUP,
+        group_id=KAFKA_CONSUMER_GROUP_PROFIL,
         auto_offset_reset='earliest' # Commence au début si le groupe est nouveau
     )
     await consumer.start()
