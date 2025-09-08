@@ -1,5 +1,5 @@
 import redis.asyncio as redis
-from .redis_config import settings
+from .config import settings
 
 redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
 if settings.REDIS_PASSWORD:

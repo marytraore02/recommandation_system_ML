@@ -21,6 +21,7 @@ USER_ID_ROLE_MAPPING = {
     "44456737-15dc-45b3-a8b3-b201eb3b12f7": "INFLUENCEUR",
     "7056bb7f-6b04-470b-9811-aceaac75bcfe": "ORGANISATEUR"
 }
+# ROLE = ["USER", "USER", "USER", "ADMIN"]
 
 # Listes de valeurs pour les champs à varier
 CONFIRMED = [True, True, True, False]
@@ -151,11 +152,13 @@ def send_test_message():
         now = datetime.now(timezone.utc)
         
         # Sélectionne un ID et son rôle correspondant de manière aléatoire
-        user_id, user_role = random.choice(list(USER_ID_ROLE_MAPPING.items()))
+        user_id, role = random.choice(list(USER_ID_ROLE_MAPPING.items()))
         
+        # role = random.choice(ROLE)
         # Données de test avec les nouveaux champs
         test_data = {
             "id": user_id,
+            # "id": str(uuid.uuid4()),
             "firstName": fake.first_name(),
             "lastName": fake.last_name(),
             "email": fake.email(),
@@ -163,7 +166,7 @@ def send_test_message():
             "createdDate": now.isoformat(),
             "lastModifiedDate": now.isoformat(),
             "deleted": False,
-            "role": user_role,
+            "role": role,
             "picture": "media/default.jpg",
             "statut": "ACTIVE",
             "confirmed": random.choice(CONFIRMED),

@@ -5,6 +5,10 @@ from typing import List, Optional
 import uuid as uuid_pkg
 import redis
 
+import redis.asyncio as redis
+
+from db.redis_client import get_redis_client, redis_connection_pool
+
 import models
 import schemas
 # from database import engine, get_db
@@ -147,7 +151,7 @@ def get_recommendations(
     
     query = (
         db.query(models.Cagnotte)
-        .options(
+        .options( 
             joinedload(models.Cagnotte.categorie), 
             joinedload(models.Cagnotte.admin)
         )

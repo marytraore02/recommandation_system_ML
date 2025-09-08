@@ -23,7 +23,7 @@ CATEGORY_MAPPING = {
 }
 
 ADMIN = ["7056bb7f-6b04-470b-9811-aceaac75bcfe", "44456737-15dc-45b3-a8b3-b201eb3b12f7", "319c6627-0e13-4613-9c56-ad455618fad1", "185b74d2-9b28-4674-9420-55138027a8cf"]
-STATUS = ["EN_COUR"]
+STATUS = ["EN_COURS"]
 TYPE = ["PUBLIC", "PRIVE"]
 PAYS = ["Mali"]
 IS_CERTIFIED = [True, True, True, False] # CORRECTION: Plus de poids pour True
@@ -69,7 +69,6 @@ def create_table_if_not_exists():
                 total_contributed INTEGER,
                 is_certified BOOLEAN,
                 commission REAL,
-                ressources JSONB
             );
         """
         
@@ -99,8 +98,8 @@ def save_to_postgres(data):
                 id, name, description, date_start, date_end, objectif, statut,
                 id_categorie, admin, type, created_date, last_modified_date,
                 deleted, total_solde, current_solde, pays, total_contributors,
-                total_contributed, is_certified, commission, ressources
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                total_contributed, is_certified, commission
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
         cur.execute(sql, (
@@ -108,8 +107,8 @@ def save_to_postgres(data):
             data['date_end'], data['objectif'], data['statut'], data['id_categorie'],
             data['admin'], data['type'], data['created_date'], data['last_modified_date'],
             data['deleted'], data['total_solde'], data['current_solde'], data['pays'],
-            data['total_contributors'], data['total_contributed'], data['is_certified'], data['commission'],
-            json.dumps(data.get('ressources', []))
+            data['total_contributors'], data['total_contributed'], data['is_certified'], data['commission']
+            # json.dumps(data.get('ressources', []))
         ))
         
         conn.commit()
@@ -172,13 +171,13 @@ def send_test_message():
         "total_contributors": random.randint(1, 200),
         "is_certified": is_certified,
         "commission": commission,
-        "total_contributed": random.randint(100000, 1000000),
-        "ressources": video_resources
+        "total_contributed": random.randint(100000, 1000000)
+        # "ressources": video_resources
     }
 
-    # --- Étape 1: Sauvegarder dans PostgreSQL ---
-    if not save_to_postgres(test_data):
-        logger.warning("L'envoi à Kafka continue malgré l'échec de la BDD...")
+    # # --- Étape 1: Sauvegarder dans PostgreSQL ---
+    # if not save_to_postgres(test_data):
+    #     logger.warning("L'envoi à Kafka continue malgré l'échec de la BDD...")
 
     # --- Étape 2: Envoyer le message à Kafka ---
     try:
@@ -211,8 +210,8 @@ if __name__ == "__main__":
     print("🧪 Test Rapide Producer (Kafka + PostgreSQL)")
     print("=" * 40)
 
-    if not create_table_if_not_exists():
-        exit()
+    # if not create_table_if_not_exists():
+    #     exit()
 
     choice = input("1. Un message\n2. Plusieurs messages\nChoix (1-2): ").strip()
     if choice == "2":

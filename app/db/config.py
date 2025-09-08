@@ -11,7 +11,12 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
 
     # Spécifie que les variables doivent être lues depuis un fichier .env
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        env_file_encoding="utf-8",
+        extra='ignore'
+    )
 
 # Instance unique des paramètres, à importer dans les autres modules
 settings = Settings()

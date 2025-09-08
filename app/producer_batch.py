@@ -1,6 +1,7 @@
-# ingestion_api.py
-# import asyncio
+import asyncio
 import logging
+from dotenv import load_dotenv
+import os
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,18 +17,16 @@ from datetime import datetime
 import random
 from decimal import Decimal
 from pydantic import BaseModel, Field
+
+
 import redis.asyncio as redis
 from db.redis_client import get_redis_client, redis_connection_pool
-
+from db.postgres_config import get_db, AsyncSession, engine, create_db_and_tables
 import asyncpg
-from dotenv import load_dotenv
-import os
-
-# import models
-# import schemas
-# from models import RessourceModel, CagnottePostModel, CagnotteModel, UserModel, CategorieModel
-# from schemas import RessourceEnrichie, CagnottePost, Ressource, Author, Cagnotte, Categorie
-# from db.postgres_config import get_db, AsyncSession, engine
+import models
+import schemas
+from models import RessourceModel, CagnottePostModel, CagnotteModel, UserModel, CategorieModel
+from schemas import RessourceEnrichie, CagnottePost, Ressource, Author, Cagnotte, Categorie
 
 
 
@@ -35,142 +34,136 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv() 
+load_dotenv()
 
-# KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
-# KAFKA_TOPIC = "user-events-topic"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+KAFKA_TOPIC = "user-events-topic"
 
-# REDIS_HOST = "localhost"
-# DB_USER = os.getenv("DB_USER")
-# DB_PASSWORD = os.getenv("DB_PASSWORD")
-# DB_NAME = os.getenv("deme_user_service")
-# DB_HOST = os.getenv("DB_HOST")
+REDIS_HOST = "localhost"
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("deme_user_service")
+DB_HOST = os.getenv("DB_HOST")
 
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     """
-#     Gère le cycle de vie de l'application.
-#     Ce qui est avant le 'yield' est exécuté au démarrage.
-#     Ce qui est après est exécuté à l'arrêt.
-#     """
-#     logger.info("🚀 Démarrage de l'application FastAPI...")
-#     # Vérifier la connexion à Redis au démarrage
-#     try:
-#         ping = await redis_connection_pool.ping()
-#         if ping:
-#             print("Connexion à Redis réussie !")
-#     except redis.exceptions.ConnectionError as e:
-#         print(f"Erreur de connexion à Redis : {e}")
+# Le gestionnaire de cycle de vie (lifespan)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application startup...")
     
-#     yield
+    # --- Initialisation ---
+    # 1. Vérifier la connexion Redis
+    await redis_connection_pool.ping()
+    print("Connexion à Redis réussie !")
+
+    # 2. Créer les tables de la base de données (si elles n'existent pas)
+    print("Création des tables de la base de données...")
+    await create_db_and_tables()
+    print("Tables créées avec succès.")
     
-#     print("Application shutdown...")
-#     # Fermer proprement le pool de connexions Redis
-#     await redis_connection_pool.close()
-#     print("Pool de connexions Redis fermé.")
+    yield
+    
+    # --- Nettoyage ---
+    print("Application shutdown...")
+    # 1. Fermer le pool Redis
+    await redis_connection_pool.close()
+    print("Pool de connexions Redis fermé.")
+    
+    # 2. Fermer le pool de connexions de la base de données
+    await engine.dispose()
+    print("Pool de connexions de la base de données fermé.")
+
+    
+    print("Application shutdown...")
+    # Fermer proprement le pool de connexions Redis
+    await redis_connection_pool.close()
+    print("Pool de connexions Redis fermé.")
+
 
 
 app = FastAPI(
     title="Event Ingestion API",
     description="An ultra-fast API to receive event batches and push them to Kafka.",
-    # lifespan=lifespan
+    lifespan=lifespan
 )
 
-
-
-# # Modèle Pydantic pour les données en entrée
-# class Item(BaseModel):
-#     value: str
-
-
-# @app.get("/")
-# async def health_check(redis_client: redis.Redis = Depends(get_redis_client)):
-#     """
-#     Vérifie que l'API est en ligne et peut communiquer avec Redis.
-#     """
-#     try:
-#         await redis_client.ping()
-#         return {"status": "ok", "redis_status": "connected"}
-#     except redis.exceptions.ConnectionError:
-#         raise HTTPException(status_code=503, detail="Service Unavailable: Cannot connect to Redis")
-
-
-# @app.post("/keys/{key}")
-# async def set_key(key: str, item: Item, redis_client: redis.Redis = Depends(get_redis_client)):
-#     """
-#     Définit une valeur pour une clé donnée dans Redis.
-#     """
-#     await redis_client.set(key, item.value, ex=3600) # ex=3600 -> expire dans 1h
-#     return {"key": key, "value": item.value, "status": "set"}
-
-
-# @app.get("/keys/{key}")
-# async def get_key(key: str, redis_client: redis.Redis = Depends(get_redis_client)):
-#     """
-#     Récupère la valeur d'une clé depuis Redis.
-#     """
-#     value = await redis_client.get(key)
-#     if value is None:
-#         raise HTTPException(status_code=404, detail="Key not found")
-#     return {"key": key, "value": value}
+#===============================Methodes==========================
+# --- Logique Kafka ---
+async def get_kafka_producer():
+    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+    await producer.start()
+    return producer
+#===============================Methodes==========================
 
 
 
 
+#===============================Endpoints==========================
+# --- Point de Terminaison (Endpoint) ---
+@app.post(
+    "/events/collect",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Accept a batch of user events"
+)
+async def accept_events(batch: schemas.EventBatchModel):
+    """
+    Accepte un lot d'événements, les envoie à Kafka et répond immédiatement.
+    C'est un endpoint "fire-and-forget".
+    """
+    producer = None
+    try:
+        producer = await get_kafka_producer()
+        logger.info(f"Received a batch of {len(batch.events)} events. Sending to Kafka topic '{KAFKA_TOPIC}'.")
 
-# # redis_pool = redis.from_url(f"redis://{REDIS_HOST}", decode_responses=True)
-# # db_pool = None
+        # Préparation des messages pour Kafka de manière asynchrone
+        tasks = []
+        for event in batch.events:
+            # Sérialisation de l'événement en JSON
+            message = event.model_dump_json().encode("utf-8")
+            tasks.append(producer.send(KAFKA_TOPIC, message))
+        
+        # Envoi de tous les messages en parallèle
+        await asyncio.gather(*tasks)
 
-# @app.on_event("startup")
-# async def startup():
-#     global db_pool
-#     try:
-#         db_pool = await asyncpg.create_pool(
-#             user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST
-#         )
-#         logger.info("Database connection pool started.")
-#     except Exception as e:
-#         logger.error(f"Could not connect to the database: {e}")
+        logger.info("Batch successfully sent to Kafka.")
+        return {"status": "accepted", "message": f"{len(batch.events)} events queued."}
 
-# @app.on_event("shutdown")
-# async def shutdown():
-#     if db_pool:
-#         await db_pool.close()
-#     await redis_pool.close()
-
-
-
-# # --- Modèles de Données (Validation avec Pydantic) ---
-# # Ce modèle valide chaque événement individuel dans le lot.
-
-
-# # --- Logique Kafka ---
-# async def get_kafka_producer():
-#     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-#     await producer.start()
-#     return producer
+    except Exception as e:
+        logger.error(f"Error connecting or sending to Kafka: {e}")
+        # Si Kafka est indisponible, on retourne une erreur 503
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not send events to the processing queue. Please try again later."
+        )
+    finally:
+        if producer:
+            await producer.stop()
 
 
 
-
-
-# # --- Fonctions de Logique ---
-# async def get_top_categories_from_profile(user_key: str) -> List[str]:
-#     profile = await redis_pool.hgetall(user_key)
-#     if not profile:
-#         return []
+# --- Fonctions de Logique ---
+async def get_top_categories_from_profile(user_key: str) -> List[str]:
+    profile = await redis_pool.hgetall(user_key)
+    if not profile:
+        return []
     
-#     # Trier les catégories par score, du plus haut au plus bas
-#     sorted_categories = sorted(profile.items(), key=lambda item: float(item[1]), reverse=True)
-#     print(sorted_categories)
+    # Trier les catégories par score, du plus haut au plus bas
+    sorted_categories = sorted(profile.items(), key=lambda item: float(item[1]), reverse=True)
+    print(sorted_categories)
     
-#     # Retourner les catégories avec un score positif
-#     return [category for category, score in sorted_categories if float(score) > 0]
+    # Retourner les catégories avec un score positif
+    return [category for category, score in sorted_categories if float(score) > 0]
 
-# async def fetch_cagnottes(pool, query, *args):
-#     async with pool.acquire() as connection:
-#         return await connection.fetch(query, *args)
+async def fetch_cagnottes(pool, query, *args):
+    async with pool.acquire() as connection:
+        return await connection.fetch(query, *args)
+#===============================Endpoints==========================
+
+
+
+
+
+
     
     
 
@@ -301,50 +294,6 @@ app = FastAPI(
     
 #     # S'assurer de ne jamais dépasser la limite demandée
 #     return recommendations[:limit]
-
-
-
-
-
-# # --- Point de Terminaison (Endpoint) ---
-# @app.post(
-#     "/events/collect",
-#     status_code=status.HTTP_202_ACCEPTED,
-#     summary="Accept a batch of user events"
-# )
-# async def accept_events(batch: schemas.EventBatchModel):
-#     """
-#     Accepte un lot d'événements, les envoie à Kafka et répond immédiatement.
-#     C'est un endpoint "fire-and-forget".
-#     """
-#     producer = None
-#     try:
-#         producer = await get_kafka_producer()
-#         logger.info(f"Received a batch of {len(batch.events)} events. Sending to Kafka topic '{KAFKA_TOPIC}'.")
-
-#         # Préparation des messages pour Kafka de manière asynchrone
-#         tasks = []
-#         for event in batch.events:
-#             # Sérialisation de l'événement en JSON
-#             message = event.model_dump_json().encode("utf-8")
-#             tasks.append(producer.send(KAFKA_TOPIC, message))
-        
-#         # Envoi de tous les messages en parallèle
-#         await asyncio.gather(*tasks)
-
-#         logger.info("Batch successfully sent to Kafka.")
-#         return {"status": "accepted", "message": f"{len(batch.events)} events queued."}
-
-#     except Exception as e:
-#         logger.error(f"Error connecting or sending to Kafka: {e}")
-#         # Si Kafka est indisponible, on retourne une erreur 503
-#         raise HTTPException(
-#             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-#             detail="Could not send events to the processing queue. Please try again later."
-#         )
-#     finally:
-#         if producer:
-#             await producer.stop()
 
 
 

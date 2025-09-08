@@ -16,7 +16,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,  # Mettre à False en production pour éviter de logger toutes les requêtes SQL
+    echo=True,  # Mettre à False en production pour éviter de logger toutes les requêtes SQL
     pool_size=10, 
     max_overflow=20
 )
@@ -31,6 +31,14 @@ SessionLocal = sessionmaker(
 
 Base = declarative_base()
 
+
+# Fonction pour créer les tables dans la base de données
+async def create_db_and_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# Dépendance FastAPI pour obtenir une session de base de données
 async def get_db():
     async with SessionLocal() as session:
         yield session
+
