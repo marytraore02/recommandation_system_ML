@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
-from database import engine, get_db
+from recommandation_system_ML.app.db.postgres_config import engine, get_db
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -845,34 +845,8 @@ def read_root():
     return {"message": "Bienvenue sur l'API de recommandation de cagnottes !"}
 
 
-@app.get("/ressources/", response_model=List[schemas.Ressource], tags=["Ressources"])
-async def get_all_ressources(skip: int = 0, limit: int = 5, db: AsyncSession = Depends(get_db)):
-    """
-    Récupère une liste de toutes les ressources avec pagination.
-    """
-    try:
-        result = await db.execute(select(models.RessourceModel).offset(skip).limit(limit))
-        ressources = result.scalars().all()
-        return ressources
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
 
-# @app.get("/api/v1/resources/", response_model=List[models.RessourceSchema])
-# def get_all_resources(db: Session = Depends(get_db)):
-#     resources = db.query(database.RessourceModel).all()
-#     return resources
-
-# @app.get("/api/v1/resources/{resource_id}", response_model=models.RessourceSchema)
-# def get_resource_by_id(resource_id: int, db: Session = Depends(get_db)):
-#     resource = db.query(database.RessourceModel).filter(database.RessourceModel.id == resource_id).first()
-#     if resource is None:
-#         raise HTTPException(status_code=404, detail="Ressource not found")
-#     return resource
-
-# @app.on_event("startup")
-# def on_startup():
-#     database.init_db()
 
 
 

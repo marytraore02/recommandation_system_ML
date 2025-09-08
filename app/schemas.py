@@ -1,11 +1,12 @@
 #Pydantic est utilisé pour définir la forme des données que nous attendons en entrée et en sortie de notre API. C'est une excellente pratique pour la validation et la documentation automatique.
 
 from pydantic import BaseModel, Field
-from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from models import TypeRessource
 import enum
+from typing import List, Dict, Any, Optional
+
 
 
 class TypeRessource(str, enum.Enum):
@@ -78,7 +79,7 @@ class Cagnotte(BaseModel):
     type: Optional[TypeCagnotte] = TypeCagnotte.PUBLIC
     
     categorie: Categorie
-    # admin: Author  # Utiliser le schéma Author pour la relation
+    admin: Author  # Utiliser le schéma Author pour la relation
     
     created_date: datetime
     last_modified_date: datetime
@@ -114,3 +115,22 @@ class RessourceEnrichie(Ressource):
     et y ajoute les détails du post associé.
     """
     cagnotte_posts: Optional[CagnottePost] = None
+
+
+class EventModel(BaseModel):
+    event_id: int
+    event_type: str
+    timestamp: str
+    user_type: str
+    cagnotte_id:  Optional[str] = None
+    video_id:  Optional[str] = None # Optionnel, car pas présent dans tous les events
+    post_id:  Optional[str] = None  # Optionnel, car pas présent dans tous les events
+    id_categorie: str
+    pays: str
+    data: Dict[str, Any]
+    user_id:  Optional[str] = None
+    session_id:  Optional[str] = None
+
+# Ce modèle valide le lot d'événements reçu.
+class EventBatchModel(BaseModel):
+    events: List[EventModel] = Field(..., min_length=1)

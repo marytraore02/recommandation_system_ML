@@ -3,6 +3,8 @@ import json
 import logging
 import redis
 from aiokafka import AIOKafkaConsumer
+from typing import List, Dict, Any
+
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,7 +35,8 @@ except redis.exceptions.ConnectionError as e:
     exit()
 
 # --- Logique de Traitement ---
-def update_user_profile(events: list):
+def update_user_profile(events: List[Dict[str, Any]]):
+    """Met à jour les profils utilisateurs dans Redis en se basant sur un lot d'événements."""
     logger.info(f"--- Updating user profiles for a batch of {len(events)} events ---")
     
     with redis_client.pipeline() as pipe:
@@ -44,33 +47,28 @@ def update_user_profile(events: list):
             if weight is None:
                 continue
 
-            # On récupère l'ID de la catégorie directement depuis le champ 'categorie'
             category_id = event.get("id_categorie")
             if not category_id:
                 continue
 
-            # Déterminer si l'utilisateur est authentifié ou anonyme
             user_type = event.get("user_type")
+            redis_key = None
+
             if user_type == "authenticated":
-                user_id = event.get("user_id")
-                if user_id:
-                    redis_key = f"profile:{user_id}"
-                else: continue
+                if user_id := event.get("user_id"): # Python 3.8+ Walrus operator
+                    redis_key = f"profile:user:{user_id}"
             elif user_type == "anonymous":
-                session_id = event.get("session_id")
-                if session_id:
+                if session_id := event.get("session_id"):
                     redis_key = f"profile:session:{session_id}"
-                else: continue
-            else:
-                continue
 
-            # HINCRBYFLOAT met à jour le score pour une catégorie dans le profil de l'utilisateur
-            # On utilise l'ID de la catégorie comme clé de champ
-            pipe.hincrbyfloat(redis_key, category_id, weight)
-            logger.info(f"User '{redis_key}' interest in category ID '{category_id}' updated by {weight}")
-
+            if redis_key:
+                pipe.hincrbyfloat(redis_key, category_id, weight)
+                # Note: logger dans une boucle aussi serrée peut ralentir. À n'utiliser qu'en debug.
+                # logger.info(f"Profile '{redis_key}' category '{category_id}' updated by {weight}")
 
         pipe.execute()
+    logger.info("--- Batch update complete ---")
+
 
 # --- Logique du Consumer ---
 async def consume_and_build_profiles():
@@ -78,17 +76,33 @@ async def consume_and_build_profiles():
         KAFKA_TOPIC,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         group_id=KAFKA_CONSUMER_GROUP,
+        auto_offset_reset='earliest' # Commence au début si le groupe est nouveau
     )
     await consumer.start()
     logger.info("Profile builder consumer started...")
     try:
         while True:
-            result = await consumer.getmany(timeout_ms=1000, max_records=200)
-            for tp, messages in result.items():
-                if messages:
-                    events = [json.loads(msg.value.decode('utf-8')) for msg in messages]
-                    update_user_profile(events)
+            result = await consumer.getmany(timeout_ms=1000, max_records=500) # Augmentation du batch size
+            for tp, messages in result.items(): 
+                if not messages:
+                    continue
+
+                valid_events = []
+                for msg in messages:
+                    try:
+                        # Décodage et parsing robustes
+                        event_data = json.loads(msg.value.decode('utf-8'))
+                        valid_events.append(event_data)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        logger.warning(f"Could not decode message offset {msg.offset}: {e}")
+                
+                if valid_events:
+                    update_user_profile(valid_events)
+
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in consumer loop: {e}")
     finally:
+        logger.info("Stopping consumer...")
         await consumer.stop()
 
 if __name__ == "__main__":
