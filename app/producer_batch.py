@@ -1,17 +1,22 @@
 import asyncio
 import logging
+import json
 from dotenv import load_dotenv
 import os
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, Session
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, aliased
 import uuid as uuid_pkg
-from sqlalchemy import select, func, union_all
+from sqlalchemy import select, func, union_all, literal_column
+from sqlalchemy.dialects.postgresql import UUID # ou autre selon votre DB
+# from sqlalchemy.sql.window import Window
+# from sqlalchemy.sql import window
+
 
 from aiokafka import AIOKafkaProducer
-from fastapi import FastAPI, HTTPException, Query, status, Depends
+from fastapi import FastAPI, HTTPException, Query, status, Depends, APIRouter
 from contextlib import asynccontextmanager
 from datetime import datetime
 # from uuid import UUID
@@ -21,13 +26,14 @@ from pydantic import BaseModel, Field
 
 
 import redis.asyncio as redis
+import redis.asyncio as aioredis
 from db.redis_client import get_redis_client, redis_connection_pool
 from db.postgres_config import get_db, AsyncSession, engine, create_db_and_tables
 import asyncpg
 import models
 import schemas
 from models import RessourceModel, CagnottePostModel, CagnotteModel, UserModel, CategorieModel
-from schemas import RessourceEnrichie, CagnottePost, Ressource, Author, Cagnotte, Categorie
+from schemas import RessourceEnrichie, Ressource, Author, Cagnotte, Categorie
 
 
 # --- Configuration ---
@@ -126,7 +132,7 @@ async def accept_events(
 
 
 # ===================================================================
-# OPTIMISATION 2: Remplacer les requêtes en boucle par une seule requête SQL
+# OPTIMISATION 2: Refonte de l'endpoint de recommandations pour une seule requête SQL
 # ===================================================================
 @app.get("/recommendations/", response_model=List[schemas.Cagnotte])
 async def get_recommendations(
@@ -134,7 +140,7 @@ async def get_recommendations(
     session_id: Optional[str] = None,
     total_recommendations: int = 10,
     db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis_client)
+    redis_client: aioredis.Redis = Depends(get_redis_client)
 ):
     """
     Génère une liste de cagnottes recommandées pour un utilisateur
@@ -167,10 +173,10 @@ async def get_recommendations(
     elif len(sorted_categories) == 2:
         top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]
         num_cat_1 = round(total_recommendations * 0.6); num_cat_2 = total_recommendations - num_cat_1
-        recommendations_plan = [(top_cat_1.decode('utf-8'), num_cat_1), (top_cat_2.decode('utf-8'), num_cat_2)]
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2)]
     elif len(sorted_categories) == 1:
         top_cat_1, _ = sorted_categories[0]
-        recommendations_plan = [(top_cat_1.decode('utf-8'), total_recommendations)]
+        recommendations_plan = [(top_cat_1, total_recommendations)]
     
     if not recommendations_plan:
         return []
@@ -213,6 +219,140 @@ async def get_recommendations(
     return final_recommendations
 
 
+
+@app.get("/recommendations/two", response_model=List[schemas.CagnotteRecommandee])
+async def get_recommendations(
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    total_recommendations: int = 10,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Génère une liste de cagnottes recommandées pour un utilisateur
+    en se basant sur son profil d'intérêt stocké dans Redis.
+    Cette version utilise une seule requête SQL pour une performance optimale.
+    """
+    if not user_id and not session_id:
+        raise HTTPException(status_code=400, detail="Un 'user_id' ou un 'session_id' doit être fourni.")
+    if user_id and session_id:
+        raise HTTPException(status_code=400, detail="Fournissez 'user_id' OU 'session_id', pas les deux.")
+        
+    redis_key = f"profile:user:{user_id}" if user_id else f"profile:session:{session_id}"
+
+    user_profile = await redis_client.hgetall(redis_key)
+    if not user_profile:
+        return []
+
+    sorted_categories = sorted(
+        user_profile.items(), key=lambda item: float(item[1]), reverse=True
+    )
+
+    # Création du plan de recommandation
+    recommendations_plan = []
+    # ... (logique de distribution inchangée)
+    if len(sorted_categories) >= 3:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]; top_cat_3, _ = sorted_categories[2]
+        num_cat_1 = round(total_recommendations * 0.5); num_cat_2 = round(total_recommendations * 0.3)
+        num_cat_3 = total_recommendations - num_cat_1 - num_cat_2
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2), (top_cat_3, num_cat_3)]
+    elif len(sorted_categories) == 2:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]
+        num_cat_1 = round(total_recommendations * 0.6); num_cat_2 = total_recommendations - num_cat_1
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2)]
+    elif len(sorted_categories) == 1:
+        top_cat_1, _ = sorted_categories[0]
+        recommendations_plan = [(top_cat_1, total_recommendations)]
+    
+    if not recommendations_plan:
+        return []
+
+    # Construction d'une seule requête UNION pour récupérer N cagnottes aléatoires par catégorie
+    union_queries = []
+    for category_id, num_to_fetch in recommendations_plan:
+        if num_to_fetch > 0:
+            sq = (
+                select(models.CagnotteModel.id) # On a seulement besoin de l'ID ici
+                .where(
+                    models.CagnotteModel.id_categorie == category_id,
+                    models.CagnotteModel.deleted == False,
+                    # models.CagnotteModel.statut == 'VALIDE'
+                )
+                .order_by(func.random())
+                .limit(num_to_fetch)
+            )
+            union_queries.append(sq)
+
+    if not union_queries:
+        return []
+
+    # Alias pour la sous-requête des cagnottes recommandées
+    recommended_cagnottes_sq = union_all(*union_queries).alias("recommended_cagnottes")
+
+    # 2. Définition de la CTE pour trouver la ressource média principale de CHAQUE cagnotte
+    # On cherche la ressource du "main post" avec le plus petit order_index
+    ranked_resources_cte = (
+        select(
+            models.RessourceModel,
+            models.CagnottePostModel.id_cagnotte,
+            # On classe les ressources pour chaque cagnotte
+            func.row_number().over(
+                partition_by=models.CagnottePostModel.id_cagnotte,
+                order_by=models.RessourceModel.order_index.asc()
+            ).label("rn") # rn = row_number
+        )
+        .join(models.CagnottePostModel, models.RessourceModel.reference == models.CagnottePostModel.id)
+        .where(models.CagnottePostModel.is_main_post == True) # On ne veut que les ressources du post principal
+        .cte("ranked_resources")
+    )
+
+
+    # 3. Requête finale combinant tout
+    # On sélectionne les cagnottes recommandées ET on fait une jointure (LEFT JOIN)
+    # avec notre CTE pour récupérer le média principal (s'il existe).
+    final_stmt = (
+        select(
+            models.CagnotteModel,
+            # ranked_resources_cte # On sélectionne aussi les colonnes de la ressource
+            models.RessourceModel
+        )
+        # Jointure pour filtrer uniquement les cagnottes recommandées
+        .join(
+            recommended_cagnottes_sq,
+            models.CagnotteModel.id == recommended_cagnottes_sq.c.id
+        )
+        # Jointure GAUCHE pour récupérer le média (il peut ne pas y en avoir)
+        .join(
+            ranked_resources_cte,
+            (models.CagnotteModel.id == ranked_resources_cte.c.id_cagnotte) &
+            (ranked_resources_cte.c.rn == 1), # On prend seulement la 1ère ressource classée
+            isouter=True # isouter=True fait un LEFT JOIN
+        )
+        # Chargement eager des relations pour éviter les requêtes N+1
+        .options(
+            selectinload(models.CagnotteModel.categorie),
+            selectinload(models.CagnotteModel.admin)
+        )
+    )
+
+    result = await db.execute(final_stmt)
+    # Le résultat est maintenant une liste de tuples : (CagnotteModel, RessourceModel | None)
+    recommendations_with_media = result.all()
+
+    # Mélanger les résultats
+    random.shuffle(recommendations_with_media)
+
+    # 4. Formater la réponse pour qu'elle corresponde au schéma Pydantic
+    final_recommendations = []
+    for cagnotte, ressource, in recommendations_with_media:
+        cagnotte_reco = schemas.CagnotteRecommandee.from_orm(cagnotte)
+        if ressource:
+            cagnotte_reco.main_media = schemas.Ressource.from_orm(ressource)
+        final_recommendations.append(cagnotte_reco)
+
+    return final_recommendations
+
+
 # ===================================================================
 # OPTIMISATION 3: Ajouter la pagination à l'endpoint de ressources
 # ===================================================================
@@ -251,14 +391,14 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
         # 2. Construire la requête pour le post avec les jointures complètes
         # Chaînage des joinedload pour charger les relations imbriquées
         query = (
-            select(CagnottePostModel)
+            select(CagnottePostModelModel)
             .options(
                 # Charger l'auteur du post
-                joinedload(CagnottePostModel.author), 
-                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.admin),
-                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.categorie)
+                joinedload(CagnottePostModelModel.author), 
+                joinedload(CagnottePostModelModel.cagnotte).joinedload(CagnotteModel.admin),
+                joinedload(CagnottePostModelModel.cagnotte).joinedload(CagnotteModel.categorie)
             )
-            .where(CagnottePostModel.id == ressource.reference)
+            .where(CagnottePostModelModel.id == ressource.reference)
         )
         
         result_post = await db.execute(query)
@@ -267,7 +407,7 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
         if post:
             # Assurez-vous d'utiliser `from_orm` ou `model_validate`
             # pour transformer l'objet SQLAlchemy en Pydantic
-            cagnotte_posts = CagnottePost.from_orm(post)
+            cagnotte_posts = CagnottePostModel.from_orm(post)
     
     # 3. Construire la réponse enrichie
     enriched_data = RessourceEnrichie(
@@ -280,138 +420,472 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
     return enriched_data
 
 
+# ===================================================================
+# Analytics endpoints
+# ===================================================================
+# Liste des pays par popularité avec tri et pagination
+@app.get("/analytics/countries/popularity")
+async def get_countries_popularity(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de pays à retourner"),
+    sort_by: str = Query("popularity_score", description="Critère de tri: popularity_score, unique_users, total_events"),
+    order: str = Query("desc", description="Ordre: asc ou desc")
+):
+    """
+    Récupère la popularité par pays depuis Redis
+    """
+    try:
+        # Récupérer les données depuis Redis
+        data = await redis.get("analytics_popularity_by_country")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité par pays non trouvées")
+        
+        countries_data = json.loads(data)
+        
+        # Convertir en liste pour le tri
+        countries_list = list(countries_data.values())
+        
+        # Tri
+        reverse = order.lower() == "desc"
+        try:
+            countries_list.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+        except (KeyError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
+        
+        # Limitation
+        if limit:
+            countries_list = countries_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": countries_list,
+            "total_countries": len(countries_data),
+            "returned_countries": len(countries_list),
+            "sorted_by": sort_by,
+            "order": order,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pays: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
+#Détails pour un pays spécifique
+@app.get("/analytics/countries/popularity/{country}")
+async def get_country_popularity(
+    country: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de popularité pour un pays spécifique
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_country")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
+        
+        countries_data = json.loads(data)
+        
+        country_data = countries_data.get(country)
+        if not country_data:
+            raise HTTPException(status_code=404, detail=f"Pays '{country}' non trouvé")
+        
+        return {
+            "status": "success",
+            "data": country_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour {country}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-    
-    
-
-# @app.get("/recommendations/two2", response_model=List[schemas.Cagnotte])
-# async def get_recommendations(
-#     user_identifier: str, 
-#     user_type: str = Query(..., pattern="^(authenticated|anonymous)$"),
-#     limit: int = 10 # Le nombre total de recommandations souhaitées
-# ):
-#     """
-#     Génère une liste de cagnottes recommandées pour un utilisateur en se basant sur son profil d'intérêt.
-#     Le profil est construit à partir des IDs de catégories stockés dans Redis.
-#     """
-#     if not db_pool:
-#         raise HTTPException(status_code=503, detail="Database connection is not available.")
-
-#     # 1. Construire la clé Redis pour le profil utilisateur
-#     redis_key = f"profile:{user_identifier}" if user_type == "authenticated" else f"profile:session:{user_identifier}"
-    
-#     # 2. Récupérer le profil et trier les catégories (par ID) par score
-#     profile = await redis_pool.hgetall(redis_key)
-    
-#     # Si aucun profil n'existe, retourner les cagnottes les plus populaires comme fallback
-#     if not profile:
-#         logger.info(f"No profile for {redis_key}. Falling back to popular cagnottes.")
-#         query = "SELECT * FROM cagnottes WHERE statut = 'VALIDE' ORDER BY total_contributors DESC LIMIT $1"
-#         records = await db_pool.fetch(query, limit)
-#         return [schemas.Cagnotte.model_validate(dict(r)) for r in records]
-
-#     # Trier les IDs de catégorie par score (du plus élevé au plus bas)
-#     sorted_category_ids = sorted(profile.items(), key=lambda item: float(item[1]), reverse=True)
-    
-#     # Garder uniquement les catégories avec un score d'intérêt positif
-#     top_category_ids = [cat_id for cat_id, score in sorted_category_ids if float(score) > 0]
-
-#     # Si l'utilisateur n'a aucun intérêt positif, retourner les plus populaires
-#     if not top_category_ids:
-#         logger.info(f"No positive scores for {redis_key}. Falling back to popular cagnottes.")
-#         query = "SELECT * FROM cagnottes WHERE statut = 'VALIDE' ORDER BY total_contributors DESC LIMIT $1"
-#         records = await db_pool.fetch(query, limit)
-#         return [schemas.Cagnotte.model_validate(dict(r)) for r in records]
-
-#     # 3. Distribuer les recommandations sur les top catégories
-#     recommendations = []
-    
-#     # Définir la distribution (ex: 50% pour la 1ère, 30% pour la 2ème, 20% pour la 3ème)
-#     distribution = [0.5, 0.3, 0.2]
-#     # Prendre au maximum N catégories en fonction de la distribution définie
-#     category_ids_to_query = top_category_ids[:len(distribution)] 
-
-#     # Préparer les requêtes en parallèle
-#     tasks = []
-#     # query_template = "SELECT * FROM cagnottes WHERE id_categorie = $1 AND statut = 'VALIDE' ORDER BY total_contributors DESC LIMIT $2"
-#     query_template = """
-#         SELECT
-#             c.id, c.name, c.description, c.pays, c.objectif,
-#             c.total_solde AS "totalSolde", c.current_solde AS "currentSolde", c.statut, c.type, c.commission,
-#             c.total_contributors AS "totalContributors", c.date_start AS "dateStart", c.date_end AS "dateEnd", c.ressources,
-#             cat.id AS "categorie_id", cat.name AS "categorie_name",
-#             u.first_name AS "admin_firstName", u.last_name AS "admin_lastName",
-#             u.phone AS "admin_phone", u.email AS "admin_email", u.picture AS "admin_picture"
-#         FROM cagnottes AS c
-#         LEFT JOIN categories AS cat ON c.id_categorie = cat.id
-#         LEFT JOIN users AS u ON c.admin = u.id
-#         WHERE c.id_categorie = $1 AND c.statut = 'VALIDE'
-#         ORDER BY c.total_contributors DESC LIMIT $2
-#     """
-    
-#     for i, category_id in enumerate(category_ids_to_query):
-#         # Le category_id est maintenant un UUID, ce qui est correct pour la requête
-#         num_to_fetch = int(limit * distribution[i])
-#         if num_to_fetch > 0:
-#             tasks.append(db_pool.fetch(query_template, category_id, num_to_fetch))
-#             logger.info(f"Fetching {num_to_fetch} cagnottes for category ID '{category_id}'")
-
-#     # Exécuter toutes les requêtes en parallèle pour une performance maximale
-#     results_from_db = await asyncio.gather(*tasks)
-
-#     # Aplatir et TRANSFORMER les résultats
-#     recommendations_flat = []
-#     for record_list in results_from_db:
-#         recommendations_flat.extend(record_list)
-
-#     # Transformer chaque record plat en objet imbriqué
-#     recommendations = []
-#     for r in recommendations_flat:
-#         cagnotte_data = {
-#             "id": r["id"],
-#             "name": r["name"],
-#             "description": r["description"],
-#             "pays": r["pays"],
-#             "objectif": r["objectif"],
-#             "totalSolde": r["totalSolde"],
-#             "currentSolde": r["currentSolde"],
-#             "statut": r["statut"],
-#             "type": r["type"],
-#             "commission": r["commission"],
-#             "totalContributors": r["totalContributors"],
-#             "dateStart": r["dateStart"],
-#             "dateEnd": r["dateEnd"],
-#             "categorie": {
-#                 "id": r["categorie_id"],
-#                 "name": r["categorie_name"]
-#             },
-#             "admin": {
-#                 "firstName": r["admin_firstName"],
-#                 "lastName": r["admin_lastName"],
-#                 "phone": r["admin_phone"],
-#                 "email": r["admin_email"],
-#                 "picture": r["admin_picture"],
-#                 "ressources": r["ressources"],
-#             }
-#         }
-#         # Valider et convertir avec Pydantic
-#         recommendations.append(Cagnotte.model_validate(cagnotte_data))
-
-#     # 4. Assurer qu'on a le bon nombre de recommandations et mélanger
-#     # S'il manque des résultats, on comble avec des cagnottes populaires au hasard
-#     if len(recommendations) < limit:
-#         needed = limit - len(recommendations)
-#         # Utiliser `random()` pour éviter de toujours proposer les mêmes cagnottes de fallback
-#         fallback_query = "SELECT * FROM cagnottes WHERE statut = 'VALIDE' ORDER BY random() LIMIT $1"
-#         fallback_records = await db_pool.fetch(fallback_query, needed)
-#         recommendations.extend([Cagnotte.model_validate(dict(r)) for r in fallback_records])
-    
-#     # Mélanger la liste finale pour une meilleure expérience utilisateur
-#     random.shuffle(recommendations)
-    
-#     # S'assurer de ne jamais dépasser la limite demandée
-#     return recommendations[:limit]
+#Liste des catégories par popularité
+@app.get("/analytics/categories/popularity")
+async def get_categories_popularity(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de catégories à retourner"),
+    sort_by: str = Query("popularity_score", description="Critère de tri"),
+    order: str = Query("desc", description="Ordre: asc ou desc")
+):
+    """
+    Récupère la popularité par catégorie depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité par catégorie non trouvées")
+        
+        categories_data = json.loads(data)
+        categories_list = list(categories_data.values())
+        
+        # Tri
+        reverse = order.lower() == "desc"
+        try:
+            categories_list.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+        except (KeyError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
+        
+        # Limitation
+        if limit:
+            categories_list = categories_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": categories_list,
+            "total_categories": len(categories_data),
+            "returned_categories": len(categories_list),
+            "sorted_by": sort_by,
+            "order": order,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données catégories: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
 
 
+
+@app.get("/categories/popularity")
+async def get_categories_popularity(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de catégories à retourner"),
+    sort_by: str = Query("popularity_score", description="Critère de tri"),
+    order: str = Query("desc", description="Ordre: asc ou desc")
+):
+    """
+    Récupère la popularité par catégorie depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité par catégorie non trouvées")
+        
+        categories_data = json.loads(data)
+        categories_list = list(categories_data.values())
+        
+        # Tri
+        reverse = order.lower() == "desc"
+        try:
+            categories_list.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+        except (KeyError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
+        
+        # Limitation
+        if limit:
+            categories_list = categories_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": categories_list,
+            "total_categories": len(categories_data),
+            "returned_categories": len(categories_list),
+            "sorted_by": sort_by,
+            "order": order,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données catégories: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/categories/popularity/{category_id}")
+async def get_category_popularity(
+    category_id: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de popularité pour une catégorie spécifique
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
+        
+        categories_data = json.loads(data)
+        category_data = categories_data.get(category_id)
+        if not category_data:
+            raise HTTPException(status_code=404, detail=f"Catégorie '{category_id}' non trouvée")
+        
+        return {
+            "status": "success",
+            "data": category_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour la catégorie {category_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/trending/countries")
+async def get_trending_countries(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    trend_direction: Optional[str] = Query(None, description="Filtrer par direction: up, down, stable"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de pays à retourner")
+):
+    """
+    Récupère les tendances par pays depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_trending_by_country")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de tendances par pays non trouvées")
+        
+        trending_data = json.loads(data)
+        trending_list = list(trending_data.values())
+        
+        # Filtrage par direction de tendance
+        if trend_direction:
+            trending_list = [item for item in trending_list if item.get('trend_direction') == trend_direction]
+        
+        # Tri par trending_score (décroissant par défaut)
+        trending_list.sort(key=lambda x: x.get('trending_score', 0), reverse=True)
+        
+        # Limitation
+        if limit:
+            trending_list = trending_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": trending_list,
+            "total_countries": len(trending_data),
+            "returned_countries": len(trending_list),
+            "filter_direction": trend_direction,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des tendances pays: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/trending/categories")
+async def get_trending_categories(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    trend_direction: Optional[str] = Query(None, description="Filtrer par direction: up, down, stable"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de catégories à retourner")
+):
+    """
+    Récupère les tendances par catégorie depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_trending_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de tendances par catégorie non trouvées")
+        
+        trending_data = json.loads(data)
+        trending_list = list(trending_data.values())
+        
+        # Filtrage par direction de tendance
+        if trend_direction:
+            trending_list = [item for item in trending_list if item.get('trend_direction') == trend_direction]
+        
+        # Tri par trending_score
+        trending_list.sort(key=lambda x: x.get('trending_score', 0), reverse=True)
+        
+        # Limitation
+        if limit:
+            trending_list = trending_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": trending_list,
+            "total_categories": len(trending_data),
+            "returned_categories": len(trending_list),
+            "filter_direction": trend_direction,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des tendances catégories: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/user-engagement")
+async def get_user_engagement_analytics(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    segment: Optional[str] = Query(None, description="Segment d'utilisateurs: high_engagement, medium_engagement, low_engagement")
+):
+    """
+    Récupère les analytics d'engagement utilisateur depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_user_engagement")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données d'engagement utilisateur non trouvées")
+        
+        engagement_data = json.loads(data)
+        
+        # Si un segment spécifique est demandé
+        if segment and segment in engagement_data.get('user_segments', {}):
+            return {
+                "status": "success",
+                "data": {
+                    "segment": segment,
+                    "users": engagement_data['user_segments'][segment]
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        return {
+            "status": "success",
+            "data": engagement_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des analytics d'engagement: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/content-performance")
+async def get_content_performance(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de vidéos à retourner"),
+    sort_by: str = Query("quality_score", description="Critère de tri: quality_score, total_views, avg_completion_rate"),
+    min_views: Optional[int] = Query(None, ge=0, description="Nombre minimum de vues")
+):
+    """
+    Récupère les analytics de performance de contenu depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_content_performance")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de performance de contenu non trouvées")
+        
+        content_data = json.loads(data)
+        content_list = list(content_data.values())
+        
+        # Filtrage par nombre minimum de vues
+        if min_views is not None:
+            content_list = [item for item in content_list if item.get('total_views', 0) >= min_views]
+        
+        # Tri
+        try:
+            content_list.sort(key=lambda x: x.get(sort_by, 0), reverse=True)
+        except (KeyError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
+        
+        # Limitation
+        if limit:
+            content_list = content_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": content_list,
+            "total_videos": len(content_data),
+            "returned_videos": len(content_list),
+            "sorted_by": sort_by,
+            "min_views_filter": min_views,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des performances de contenu: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+@app.get("/content-performance/{video_id}")
+async def get_video_performance(
+    video_id: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de performance pour une vidéo spécifique
+    """
+    try:
+        data = await redis.get("analytics_content_performance")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de performance non trouvées")
+        
+        content_data = json.loads(data)
+        video_data = content_data.get(video_id)
+        if not video_data:
+            raise HTTPException(status_code=404, detail=f"Vidéo '{video_id}' non trouvée")
+        
+        return {
+            "status": "success",
+            "data": video_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour la vidéo {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+#Résumé de toutes les analytics disponibles
+@app.get("/summary")
+async def get_analytics_summary(
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère un résumé de toutes les analytics disponibles
+    """
+    try:
+        # Récupérer les métadonnées
+        metadata = await redis.get("comprehensive_analytics_metadata")
+        if metadata:
+            metadata = json.loads(metadata)
+        
+        summary = {
+            "status": "success",
+            "metadata": metadata,
+            "available_analytics": [],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Vérifier la disponibilité de chaque type d'analytics
+        analytics_keys = [
+            ("popularity_by_country", "Popularité par pays"),
+            ("popularity_by_category", "Popularité par catégorie"),
+            ("trending_by_country", "Tendances par pays"),
+            ("trending_by_category", "Tendances par catégorie"),
+            ("user_engagement", "Analytics d'engagement"),
+            ("content_performance", "Performance de contenu")
+        ]
+        
+        for key, description in analytics_keys:
+            redis_key = f"analytics_{key}"
+            exists = await redis.exists(redis_key)
+            if exists:
+                ttl = await redis.ttl(redis_key)
+                summary["available_analytics"].append({
+                    "type": key,
+                    "description": description,
+                    "redis_key": redis_key,
+                    "available": True,
+                    "ttl_seconds": ttl if ttl > 0 else None
+                })
+            else:
+                summary["available_analytics"].append({
+                    "type": key,
+                    "description": description,
+                    "redis_key": redis_key,
+                    "available": False,
+                    "ttl_seconds": None
+                })
+        
+        return summary
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des métadonnées")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération du résumé: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")

@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field
 from uuid import UUID
+import uuid
 from datetime import datetime
 from models import TypeRessource
 import enum
@@ -116,6 +117,33 @@ class RessourceEnrichie(Ressource):
     et y ajoute les détails du post associé.
     """
     cagnotte_posts: Optional[CagnottePost] = None
+
+
+# Le schéma final pour la recommandation
+# Il contient la cagnotte et potentiellement son média principal
+class CagnotteRecommandee(BaseModel):
+    id: UUID
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    pays: str = Field(..., max_length=100)
+    date_start: Optional[datetime] = None
+    date_end: Optional[datetime] = None
+    objectif: Optional[int] = Field(None, ge=0)
+    total_solde: int = Field(0, ge=0)
+    current_solde: int = Field(0, ge=0)
+    statut: Optional[StatutCagnotte] = StatutCagnotte.EN_COURS
+    type: Optional[TypeCagnotte] = TypeCagnotte.PUBLIC
+    categorie: Categorie
+    admin: Author
+    created_date: datetime
+    last_modified_date: datetime
+    deleted: bool   
+
+    # Le nouveau champ pour le média !
+    main_media: Optional[Ressource] = None
+
+    class Config:
+        from_attributes = True
 
 
 class EventModel(BaseModel):
