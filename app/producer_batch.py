@@ -391,14 +391,14 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
         # 2. Construire la requête pour le post avec les jointures complètes
         # Chaînage des joinedload pour charger les relations imbriquées
         query = (
-            select(CagnottePostModelModel)
+            select(CagnottePostModel)
             .options(
                 # Charger l'auteur du post
-                joinedload(CagnottePostModelModel.author), 
-                joinedload(CagnottePostModelModel.cagnotte).joinedload(CagnotteModel.admin),
-                joinedload(CagnottePostModelModel.cagnotte).joinedload(CagnotteModel.categorie)
+                joinedload(CagnottePostModel.author), 
+                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.admin),
+                joinedload(CagnottePostModel.cagnotte).joinedload(CagnotteModel.categorie)
             )
-            .where(CagnottePostModelModel.id == ressource.reference)
+            .where(CagnottePostModel.id == ressource.reference)
         )
         
         result_post = await db.execute(query)
@@ -407,7 +407,7 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
         if post:
             # Assurez-vous d'utiliser `from_orm` ou `model_validate`
             # pour transformer l'objet SQLAlchemy en Pydantic
-            cagnotte_posts = CagnottePostModel.from_orm(post)
+            cagnotte_posts = schemas.CagnottePost.from_orm(post)
     
     # 3. Construire la réponse enrichie
     enriched_data = RessourceEnrichie(
@@ -423,6 +423,11 @@ async def get_enriched_ressource(ressource_id: int, db: AsyncSession = Depends(g
 # ===================================================================
 # Analytics endpoints
 # ===================================================================
+
+
+
+
+# =========================POPULARITY==========================================
 # Liste des pays par popularité avec tri et pagination
 @app.get("/analytics/countries/popularity")
 async def get_countries_popularity(
@@ -472,32 +477,80 @@ async def get_countries_popularity(
         logger.error(f"Erreur lors de la récupération des données pays: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-#Détails pour un pays spécifique
 @app.get("/analytics/countries/popularity/{country}")
 async def get_country_popularity(
     country: str,
-    redis: aioredis.Redis = Depends(get_redis_client)
+    redis: aioredis.Redis = Depends(get_redis_client),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Récupère les détails de popularité pour un pays spécifique
+    Récupère les détails de popularité pour un pays spécifique, enrichit les données
+    vidéo avec les détails de la ressource et les métadonnées de la cagnotte associée.
     """
     try:
         data = await redis.get("analytics_popularity_by_country")
         if not data:
             raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
-        
+
         countries_data = json.loads(data)
-        
         country_data = countries_data.get(country)
+        
         if not country_data:
             raise HTTPException(status_code=404, detail=f"Pays '{country}' non trouvé")
+            
+        top_videos_ids = [int(video['video_id']) for video in country_data.get('top_videos', [])]
         
+        if top_videos_ids:
+            # 1. Récupérer les ressources pour obtenir les 'reference'
+            stmt = select(RessourceModel).filter(RessourceModel.id.in_(top_videos_ids))
+            result = await db.execute(stmt)
+            resources = result.scalars().all()
+            
+            # 2. Extraire les 'reference' des ressources
+            references = [str(res.reference) for res in resources if res.reference]
+            
+            # Créer un dictionnaire de ressources pour un accès rapide
+            resources_map = {res.id: res for res in resources}
+            
+            cagnotte_posts_map = {}
+            if references:
+                # 3. Récupérer les données des cagnottes posts correspondantes en une seule requête
+                # On utilise selectinload pour charger les relations (cagnotte, auteur, categorie) en amont
+                cagnotte_post_stmt = select(CagnottePostModel).filter(CagnottePostModel.id.in_(references)).options(
+                    selectinload(CagnottePostModel.cagnotte).selectinload(CagnotteModel.categorie),
+                    selectinload(CagnottePostModel.cagnotte).selectinload(CagnotteModel.admin)
+                )
+                cagnotte_post_result = await db.execute(cagnotte_post_stmt)
+                cagnotte_posts = cagnotte_post_result.scalars().unique().all()
+                
+                # Créer un dictionnaire pour un accès rapide par ID de cagnotte post
+                cagnotte_posts_map = {str(post.id): post for post in cagnotte_posts}
+
+            # 4. Enrichir les données de la réponse
+            for video in country_data['top_videos']:
+                video_id = int(video['video_id'])
+                if video_id in resources_map:
+                    resource_data = resources_map[video_id]
+                    
+                    video_details = Ressource.from_orm(resource_data).dict()
+                    
+                    # Ajouter les données de la cagnotte post si elles existent
+                    cagnotte_post_data = {}
+                    if resource_data.reference and str(resource_data.reference) in cagnotte_posts_map:
+                        post = cagnotte_posts_map[str(resource_data.reference)]
+                        
+                        # Créer le Pydantic CagnottePost à partir du modèle SQLAlchemy
+                        cagnotte_post_data = schemas.CagnottePost.from_orm(post).dict()
+                        
+                    video_details['cagnotte_post_data'] = cagnotte_post_data
+                    video['details'] = video_details
+
         return {
             "status": "success",
             "data": country_data,
             "timestamp": datetime.now().isoformat()
         }
-        
+    
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
     except Exception as e:
@@ -550,55 +603,8 @@ async def get_categories_popularity(
         logger.error(f"Erreur lors de la récupération des données catégories: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-
-
-
-@app.get("/categories/popularity")
-async def get_categories_popularity(
-    redis: aioredis.Redis = Depends(get_redis_client),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de catégories à retourner"),
-    sort_by: str = Query("popularity_score", description="Critère de tri"),
-    order: str = Query("desc", description="Ordre: asc ou desc")
-):
-    """
-    Récupère la popularité par catégorie depuis Redis
-    """
-    try:
-        data = await redis.get("analytics_popularity_by_category")
-        if not data:
-            raise HTTPException(status_code=404, detail="Données de popularité par catégorie non trouvées")
-        
-        categories_data = json.loads(data)
-        categories_list = list(categories_data.values())
-        
-        # Tri
-        reverse = order.lower() == "desc"
-        try:
-            categories_list.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
-        except (KeyError, TypeError):
-            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
-        
-        # Limitation
-        if limit:
-            categories_list = categories_list[:limit]
-        
-        return {
-            "status": "success",
-            "data": categories_list,
-            "total_categories": len(categories_data),
-            "returned_categories": len(categories_list),
-            "sorted_by": sort_by,
-            "order": order,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération des données catégories: {e}")
-        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
-
-@app.get("/categories/popularity/{category_id}")
+#étails pour une catégorie spécifique
+@app.get("/analytics/categories/popularity/{category_id}")
 async def get_category_popularity(
     category_id: str,
     redis: aioredis.Redis = Depends(get_redis_client)
@@ -627,8 +633,12 @@ async def get_category_popularity(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des données pour la catégorie {category_id}: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+# =========================POPULARITY==========================================
 
-@app.get("/trending/countries")
+
+# =========================TRENDING============================================
+#Tendances par pays avec filtrage par direction
+@app.get("/analytics/trending/countries")
 async def get_trending_countries(
     redis: aioredis.Redis = Depends(get_redis_client),
     trend_direction: Optional[str] = Query(None, description="Filtrer par direction: up, down, stable"),
@@ -671,7 +681,8 @@ async def get_trending_countries(
         logger.error(f"Erreur lors de la récupération des tendances pays: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-@app.get("/trending/categories")
+#Tendances par catégorie
+@app.get("/analytics/trending/categories")
 async def get_trending_categories(
     redis: aioredis.Redis = Depends(get_redis_client),
     trend_direction: Optional[str] = Query(None, description="Filtrer par direction: up, down, stable"),
@@ -713,8 +724,12 @@ async def get_trending_categories(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des tendances catégories: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+# =========================TRENDING==========================================
 
-@app.get("/user-engagement")
+
+# =========================USER==========================================
+# Analytics d'engagement utilisateur par segment
+@app.get("/analytics/user-engagement")
 async def get_user_engagement_analytics(
     redis: aioredis.Redis = Depends(get_redis_client),
     segment: Optional[str] = Query(None, description="Segment d'utilisateurs: high_engagement, medium_engagement, low_engagement")
@@ -752,7 +767,9 @@ async def get_user_engagement_analytics(
         logger.error(f"Erreur lors de la récupération des analytics d'engagement: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-@app.get("/content-performance")
+
+#Performance des contenus vidéo
+@app.get("/analytics/content-performance")
 async def get_content_performance(
     redis: aioredis.Redis = Depends(get_redis_client),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de vidéos à retourner"),
@@ -800,7 +817,7 @@ async def get_content_performance(
         logger.error(f"Erreur lors de la récupération des performances de contenu: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-@app.get("/content-performance/{video_id}")
+@app.get("/analytics/content-performance/{video_id}")
 async def get_video_performance(
     video_id: str,
     redis: aioredis.Redis = Depends(get_redis_client)

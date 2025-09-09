@@ -4,7 +4,6 @@ from sqlalchemy.orm import joinedload, Session
 from typing import List, Optional
 import uuid as uuid_pkg
 import redis
-
 import redis.asyncio as redis
 
 from db.redis_client import get_redis_client, redis_connection_pool
