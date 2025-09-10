@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 import logging
 import json
 from dotenv import load_dotenv
@@ -131,6 +132,151 @@ async def accept_events(
         )
 
 
+@app.get("/recommendations/test", response_model=List[schemas.CagnotteWithMeta])
+async def get_recommendations_with_meta(
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    total_recommendations: int = 10,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Génère des recommandations de cagnottes enrichies avec le post le plus récent
+    et TOUTES les ressources associées à ce post.
+    """
+    # =================================================================
+    # ÉTAPE 1: OBTENIR LES RECOMMANDATIONS DE CAGNOTTES (logique initiale)
+    # =================================================================
+    if not user_id and not session_id:
+        raise HTTPException(status_code=400, detail="Un 'user_id' ou un 'session_id' doit être fourni.")
+    if user_id and session_id:
+        raise HTTPException(status_code=400, detail="Fournissez 'user_id' OU 'session_id', pas les deux.")
+        
+    redis_key = f"profile:user:{user_id}" if user_id else f"profile:session:{session_id}"
+
+    user_profile = await redis_client.hgetall(redis_key)
+    # if not user_profile:
+    #     return []
+
+    sorted_categories = sorted(user_profile.items(), key=lambda item: float(item[1]), reverse=True)
+    
+    recommendations_plan = []
+    # ... (logique de distribution inchangée)
+    if len(sorted_categories) >= 3:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]; top_cat_3, _ = sorted_categories[2]
+        num_cat_1 = round(total_recommendations * 0.5); num_cat_2 = round(total_recommendations * 0.3)
+        num_cat_3 = total_recommendations - num_cat_1 - num_cat_2
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2), (top_cat_3, num_cat_3)]
+    elif len(sorted_categories) == 2:
+        top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]
+        num_cat_1 = round(total_recommendations * 0.6); num_cat_2 = total_recommendations - num_cat_1
+        recommendations_plan = [(top_cat_1, num_cat_1), (top_cat_2, num_cat_2)]
+    elif len(sorted_categories) == 1:
+        top_cat_1, _ = sorted_categories[0]
+        recommendations_plan = [(top_cat_1, total_recommendations)]
+
+    if not recommendations_plan:
+        return []
+
+    union_queries = []
+    for category_id, num_to_fetch in recommendations_plan:
+        if num_to_fetch > 0:
+            sq = select(models.CagnotteModel).where(models.CagnotteModel.id_categorie == category_id).order_by(func.random()).limit(num_to_fetch)
+            union_queries.append(sq)
+
+    if not union_queries:
+        return []   
+
+    full_query = union_all(*union_queries).alias("all_cagnottes")
+    final_stmt = select(models.CagnotteModel).options(selectinload(models.CagnotteModel.categorie), selectinload(models.CagnotteModel.admin)).join(full_query, models.CagnotteModel.id == full_query.c.id)
+    result = await db.execute(final_stmt)
+    recommended_cagnottes = result.scalars().all()
+    
+    if not recommended_cagnottes:
+        return []
+
+    # =====================================================================
+    # ÉTAPE 2: ENRICHIR AVEC LES MÉTADONNÉES (nouvelle logique optimisée)
+    # =====================================================================
+    
+    cagnotte_ids = [c.id for c in recommended_cagnottes]
+
+    # --- Requête pour récupérer le dernier post de chaque cagnotte ---
+    Post = models.CagnottePostModel
+    post_subquery = (
+        select(Post.id, func.row_number().over(partition_by=Post.id_cagnotte, order_by=Post.created_date.desc()).label("row_num"))
+        .where(Post.id_cagnotte.in_(cagnotte_ids))
+        .subquery()
+    )
+    stmt_posts = select(Post).join(post_subquery, Post.id == post_subquery.c.id).where(post_subquery.c.row_num == 1)
+    result_posts = await db.execute(stmt_posts)
+    relevant_posts = result_posts.scalars().all()
+
+    posts_map = {post.id_cagnotte: post for post in relevant_posts}
+    resources_map = defaultdict(list) 
+
+    post_ids = [post.id for post in relevant_posts]
+    
+    if post_ids:
+        # --- Requête pour récupérer une ressource pour chaque post pertinent ---
+        # Ressource = models.RessourceModel
+        # res_subquery = (
+        #     select(Ressource.id, func.row_number().over(partition_by=Ressource.reference, order_by=Ressource.created_date.desc()).label("row_num"))
+        #     .where(Ressource.reference.in_(post_ids))
+        #     .subquery()
+        # )
+
+        # stmt_resources = select(Ressource).join(res_subquery, Ressource.id == res_subquery.c.id).where(res_subquery.c.row_num == 1)
+        # result_resources = await db.execute(stmt_resources)
+        # relevant_resources = result_resources.scalars().all()
+        # resources_map = {res.reference: res for res in relevant_resources}
+
+
+        # Requête pour récupérer TOUTES les ressources des posts pertinents (MODIFIÉ) ---
+        # La requête est maintenant beaucoup plus simple : plus besoin de ROW_NUMBER().
+        Ressource = models.RessourceModel
+        stmt_resources = select(Ressource).where(Ressource.reference.in_(post_ids))
+        
+        result_resources = await db.execute(stmt_resources)
+        relevant_resources = result_resources.scalars().all()
+
+        for res in relevant_resources:
+            resources_map[res.reference].append(res)
+
+
+        
+    # =====================================================================
+    # ÉTAPE 3: ASSEMBLER LA RÉPONSE FINALE
+    # =====================================================================
+    final_response = []
+    for cagnotte in recommended_cagnottes:
+        cagnotte_dto = schemas.CagnotteWithMeta.from_orm(cagnotte)
+        
+        matching_post = posts_map.get(cagnotte.id)
+        if matching_post:
+            # Utilise le nouveau schéma PostWithRessources
+            post_dto = schemas.PostWithRessources.from_orm(matching_post)
+            
+            # Récupère la LISTE des ressources pour ce post et l'assigne
+            post_dto.ressources = resources_map.get(matching_post.id, [])
+            
+            cagnotte_dto.post = post_dto
+            
+        final_response.append(cagnotte_dto)
+    
+    random.shuffle(final_response)
+    
+    return final_response
+
+
+
+
+
+
+
+
+
+
 # ===================================================================
 # OPTIMISATION 2: Refonte de l'endpoint de recommandations pour une seule requête SQL
 # ===================================================================
@@ -218,9 +364,14 @@ async def get_recommendations(
     
     return final_recommendations
 
+    cagnotte_ids = [cagnotte.id for cagnotte in final_recommendations]
+    if not cagnotte_ids:
+        # Pas de cagnottes, rien à faire
+        return final_recommendations_with_meta # (qui sera vide)
 
 
-@app.get("/recommendations/two", response_model=List[schemas.CagnotteRecommandee])
+
+@app.get("/recommendations/enrichy", response_model=List[schemas.CagnotteRecommandee])
 async def get_recommendations(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,

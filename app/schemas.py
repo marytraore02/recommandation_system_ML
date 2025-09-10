@@ -29,6 +29,10 @@ class TypeCagnotte(str, enum.Enum):
     PUBLIC = "PUBLIC"
     PRIVE = "PRIVE"
 
+class TypePost(str, enum.Enum):
+    STANDARD = "iNITIAL"
+    MEDIA_ONLY = "MEDIA_ONLY"
+
 class Ressource(BaseModel):
     id: int
     file: str
@@ -51,6 +55,7 @@ class Author(BaseModel):
     firstname: str
     lastname: str
     picture: Optional[str] = None
+    role: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -107,9 +112,36 @@ class CagnottePost(BaseModel):
     created_date: datetime
     author: Author
     cagnotte: Cagnotte
+    ressource: Optional[Ressource] = None
+
+    class Config:
+        from_attributes = True
+
+class PostWithRessources(BaseModel):
+    id: UUID
+    type: Optional[str] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+    order_index: Optional[int]
+    is_main_post: bool
+    likes_count: int
+    comments_count: int
+    views_count: int
+    shares_count: int
+    is_pinned: bool
+    deleted: bool
+    created_date: datetime
+    author: Author
+    # cagnotte: Cagnotte
+    # ressource: Optional[Ressource] = None
+    ressources: List[Ressource] = []
 
     class Config:
         from_attributes = True 
+
+class CagnotteWithMeta(Cagnotte): # Hérite de votre schéma Cagnotte de base
+    post: Optional[PostWithRessources] = None
+
 
 class RessourceEnrichie(Ressource):
     """

@@ -48,6 +48,8 @@ class RessourceModel(Base):
     order_index = Column(Integer, default=0)
     alt_text = Column(String, nullable=True)
     mime_type = Column(String, nullable=True)
+    created_date = Column(DateTime, default=datetime.utcnow)
+    last_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class UserModel(Base):
