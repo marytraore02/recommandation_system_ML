@@ -20,8 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, Session
 from sqlalchemy.orm import selectinload, aliased
 import uuid as uuid_pkg
-from sqlalchemy import select, func, union_all, literal_column
+from sqlalchemy import select, func, union_all, literal_column, join
 from sqlalchemy.dialects.postgresql import UUID
+import sqlalchemy as sa
+
 from sqlalchemy import case
 
 from aiokafka import AIOKafkaProducer
@@ -175,16 +177,136 @@ def build_feed_response(
     )
     return feed_item
 
-
-
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 # Analytiques & Recommandations
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+@app.get("/recommendations/feed2/", response_model=List[schemas2.CagnottePostFeedResponse])
+async def get_recommendations_feed(
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    total_recommendations: int = 15,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Génère des recommandations de cagnottes de manière ultra-optimisée
+    avec une seule requête à la base de données.
+    """
+    # =================================================================
+    # ÉTAPE 1: OBTENIR LE PLAN DE RECOMMANDATION (INCHANGÉ, CAR DÉJÀ TRÈS RAPIDE)
+    # =================================================================
+    if not user_id and not session_id:
+        raise HTTPException(status_code=400, detail="Un 'user_id' ou un 'session_id' doit être fourni.")
+    if user_id and session_id:
+        raise HTTPException(status_code=400, detail="Fournissez 'user_id' OU 'session_id', pas les deux.")
+        
+    redis_key = f"profile:user:{user_id}" if user_id else f"profile:session:{session_id}"
+    user_profile = await redis_client.hgetall(redis_key)
+    
+    if not user_profile:
+        return []
+
+    sorted_categories = sorted(user_profile.items(), key=lambda item: float(item[1]), reverse=True)
+    recommendations_plan = []
+    remaining_recommendations = total_recommendations
+
+    # Logique de distribution dynamique (inchangée)
+    # ... (le code pour remplir recommendations_plan est identique et performant)
+    for i, (category_id, _) in enumerate(sorted_categories):
+        if i == 0: num_to_fetch = round(total_recommendations * 0.5)
+        elif i == 1: num_to_fetch = round(total_recommendations * 0.3)
+        elif i == 2: num_to_fetch = round(total_recommendations * 0.15)
+        else: num_to_fetch = max(1, round(remaining_recommendations / (len(sorted_categories) - i)))
+        num_to_fetch = min(num_to_fetch, remaining_recommendations)
+        if num_to_fetch > 0:
+            recommendations_plan.append((category_id, num_to_fetch))
+            remaining_recommendations -= num_to_fetch
+        if remaining_recommendations <= 0: break
+    if remaining_recommendations > 0 and recommendations_plan:
+        top_category_id, top_count = recommendations_plan[0]
+        recommendations_plan[0] = (top_category_id, top_count + remaining_recommendations)
+
+    if not recommendations_plan:
+        return []
+
+    # =================================================================
+    # ÉTAPE 2: LA REQUÊTE UNIQUE ET OPTIMISÉE (LE GRAND CHANGEMENT)
+    # =================================================================
+    
+    # --- CTE 1: Sélection des cagnottes recommandées ---
+    union_queries = []
+    for category_id, num_to_fetch in recommendations_plan:
+        if num_to_fetch > 0:
+            sq = select(models.CagnotteModel.id).where(models.CagnotteModel.id_categorie == category_id).order_by(func.random()).limit(num_to_fetch)
+            union_queries.append(sq)
+
+    if not union_queries:
+        return []
+
+    recommended_cagnottes_cte = union_all(*union_queries).cte("recommended_cagnottes")
+
+    # --- CTE 2: Identification du post le plus récent pour chaque cagnotte ---
+    Post = models.CagnottePostModel
+    post_subquery = (
+        select(
+            Post.id,
+            Post.id_cagnotte,
+            func.row_number().over(
+                partition_by=Post.id_cagnotte,
+                order_by=Post.created_date.desc()
+            ).label("rn")
+        )
+        .where(Post.id_cagnotte.in_(select(recommended_cagnottes_cte.c.id)))
+        .subquery("ranked_posts")
+    )
+    latest_posts_cte = select(post_subquery.c.id, post_subquery.c.id_cagnotte).where(post_subquery.c.rn == 1).cte("latest_posts")
+
+    # --- Requête finale: Assemblage de tout ---
+    Ressource = models.RessourceModel
+    final_stmt = (
+        select(Post, Ressource)
+        .join(latest_posts_cte, Post.id == latest_posts_cte.c.id)
+        # Utiliser `outerjoin` pour les ressources au cas où un post n'en aurait aucune
+        .outerjoin(Ressource, Ressource.reference == Post.id)
+        .options(
+            # Charger les relations du Post en une seule fois pour éviter des requêtes N+1
+            selectinload(Post.cagnotte).selectinload(models.CagnotteModel.categorie),
+            selectinload(Post.cagnotte).selectinload(models.CagnotteModel.admin),
+            selectinload(Post.author)
+        )
+        .order_by(latest_posts_cte.c.id_cagnotte, Ressource.order_index.asc())
+    )
+
+    result = await db.execute(final_stmt)
+    
+    # =================================================================
+    # ÉTAPE 3: ASSEMBLAGE EN PYTHON (MAINTENANT PLUS SIMPLE ET RAPIDE)
+    # =================================================================
+    
+    # Grouper les résultats par post
+    posts_with_resources = defaultdict(lambda: {"post": None, "resources": []})
+    for post, resource in result.all():
+        if not posts_with_resources[post.id]["post"]:
+            posts_with_resources[post.id]["post"] = post
+        if resource:
+            posts_with_resources[post.id]["resources"].append(resource)
+
+    # Construire la réponse finale
+    final_response = []
+    for item in posts_with_resources.values():
+        feed_item = build_feed_response(item["post"], item["resources"])
+        final_response.append(feed_item)
+    
+    random.shuffle(final_response)
+    return final_response
+
+
+
 @app.get("/recommendations/feed/", response_model=List[schemas2.CagnottePostFeedResponse])
 async def get_recommendations_feed(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    total_recommendations: int = 10,
+    total_recommendations: int = 15,
     db: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis_client)
 ):
@@ -209,7 +331,6 @@ async def get_recommendations_feed(
     sorted_categories = sorted(user_profile.items(), key=lambda item: float(item[1]), reverse=True)
     
     recommendations_plan = []
-    # ... (logique de distribution inchangée)
     if len(sorted_categories) >= 3:
         top_cat_1, _ = sorted_categories[0]; top_cat_2, _ = sorted_categories[1]; top_cat_3, _ = sorted_categories[2]
         num_cat_1 = round(total_recommendations * 0.5); num_cat_2 = round(total_recommendations * 0.3)
@@ -269,26 +390,11 @@ async def get_recommendations_feed(
     for res in result_resources.scalars().all():
         resources_by_post_id[res.reference].append(res)
 
-    # 3.2 - Tous les comptes de likes (sur la cagnotte)
-    # Favorite = models.FavoriteModel
-    # stmt_likes = select(Favorite.id_cagnotte, func.count(Favorite.id).label("count")).where(Favorite.id_cagnotte.in_(post_cagnotte_ids)).group_by(Favorite.id_cagnotte)
-    # result_likes = await db.execute(stmt_likes)
-    # likes_by_cagnotte_id = {cagnotte_id: count for cagnotte_id, count in result_likes.all()}
-
-    # # 3.3 - Tous les comptes de commentaires (sur le post)
-    # Commentaire = models.CommentaireModel
-    # stmt_comments = select(Commentaire.id_post, func.count(Commentaire.id).label("count")).where(and_(Commentaire.id_post.in_(post_ids), Commentaire.deleted == False)).group_by(Commentaire.id_post)
-    # result_comments = await db.execute(stmt_comments)
-    # comments_by_post_id = {post_id: count for post_id, count in result_comments.all()}
-
     # ÉTAPE 4: ASSEMBLER LA RÉPONSE FINALE EN UTILISANT LA FONCTION HELPER
     final_response = []
     for post in relevant_posts:
         ressources = resources_by_post_id.get(post.id, [])
-        # likes_count = likes_by_cagnotte_id.get(post.cagnotte.id, 0)
-        # comments_count = comments_by_post_id.get(post.id, 0)
-        
-        # feed_item = build_feed_response(post, ressources, likes_count, comments_count)
+
         feed_item = build_feed_response(post, ressources)
         final_response.append(feed_item)
         
@@ -402,34 +508,18 @@ async def get_country_popularity_feed(
     for res in result_resources.scalars().all():
         resources_by_post_id[res.reference].append(res)
 
-    # # 3.2 - Tous les comptes de likes (sur la cagnotte)
-    # # ... (la même requête que précédemment)
-    # likes_by_cagnotte_id = { ... }
-
-    # # 3.3 - Tous les comptes de commentaires (sur le post)
-    # # ... (la même requête que précédemment)
-    # comments_by_post_id = { ... }
-
     # ===================================================================
     # ÉTAPE 4: ASSEMBLER LA RÉPONSE FINALE
     # ===================================================================
     final_response = []
     for post in relevant_posts:
         ressources = resources_by_post_id.get(post.id, [])
-        # likes_count = likes_by_cagnotte_id.get(post.cagnotte.id, 0)
-        # comments_count = comments_by_post_id.get(post.id, 0)
-        
-        # feed_item = build_feed_response(post, ressources, likes_count, comments_count)
+
         feed_item = build_feed_response(post, ressources)
         final_response.append(feed_item)
         
     return final_response
 
-
-
-
-
-# =========================POPULARITY==========================================
 
 #Liste des catégories par popularité
 @app.get("/categories/popularity")
@@ -477,8 +567,9 @@ async def get_categories_popularity(
         logger.error(f"Erreur lors de la récupération des données catégories: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
+
 #étails pour une catégorie spécifique
-@app.get("/analytics/categories/popularity/{category_id}")
+@app.get("/categories/popularity/{category_id}")
 async def get_category_popularity(
     category_id: str,
     redis: aioredis.Redis = Depends(get_redis_client)
@@ -507,5 +598,42 @@ async def get_category_popularity(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des données pour la catégorie {category_id}: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
-# =========================POPULARITY==========================================
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Analytiques & Recommandations
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+@app.post(
+    "/events/collect",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Accept a batch of user events"
+)
+async def accept_events(
+    batch: schemas2.EventBatchModel,
+    producer: AIOKafkaProducer = Depends(get_kafka_producer) # Injection de dépendance
+):
+    """
+    Accepte un lot d'événements, les envoie à Kafka et répond immédiatement.
+    Utilise le producteur Kafka partagé pour une performance maximale.
+    """
+    try:
+        logger.info(f"Received a batch of {len(batch.events)} events. Sending to Kafka topic '{KAFKA_TOPIC_USER_EVENT}'.")
+
+        tasks = []
+        for event in batch.events:
+            message = event.model_dump_json().encode("utf-8")
+            tasks.append(producer.send(KAFKA_TOPIC_USER_EVENT, message))
+        
+        await asyncio.gather(*tasks)
+
+        logger.info("Batch successfully sent to Kafka.")
+        return {"status": "accepted", "message": f"{len(batch.events)} events queued."}
+
+    except Exception as e:
+        logger.error(f"Error sending to Kafka: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not send events to the processing queue. Please try again later."
+        )
 

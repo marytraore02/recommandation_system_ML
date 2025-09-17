@@ -172,3 +172,22 @@ class CagnottePostFeedResponse(BaseModel):
     class Config:
         from_attributes=True
         allow_population_by_field_name = True # Pour permettre l'utilisation des alias
+
+
+class EventModel(BaseModel):
+    event_id: int
+    event_type: str
+    timestamp: str
+    user_type: str
+    cagnotte_id:  Optional[str] = None
+    video_id:  Optional[str] = None # Optionnel, car pas présent dans tous les events
+    post_id:  Optional[str] = None  # Optionnel, car pas présent dans tous les events
+    id_categorie: str
+    pays: str
+    data: Dict[str, Any]
+    user_id:  Optional[str] = None
+    session_id:  Optional[str] = None
+
+# Ce modèle valide le lot d'événements reçu.
+class EventBatchModel(BaseModel):
+    events: List[EventModel] = Field(..., min_length=1)

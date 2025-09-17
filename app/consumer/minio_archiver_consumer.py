@@ -8,23 +8,27 @@ from io import BytesIO
 from aiokafka import AIOKafkaConsumer
 from minio import Minio
 from minio.error import S3Error
+from dotenv import load_dotenv
+import os
+
+
+load_dotenv()
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Configuration Kafka ---
-KAFKA_TOPIC = "user-events-topic"
-KAFKA_BOOTSTRAP_SERVERS = "localhost:29092"
-KAFKA_CONSUMER_GROUP = "minio-archiver-group" # Changed group name for clarity
+KAFKA_TOPIC_USER_EVENT = os.getenv("KAFKA_TOPIC_USER_EVENT")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+KAFKA_CONSUMER_GROUP_MINIO = os.getenv("KAFKA_CONSUMER_GROUP_MINIO")
 
 # --- Configuration MinIO ---
-# Assurez-vous que votre serveur MinIO est en cours d'exécution à cette adresse.
-MINIO_ENDPOINT = "localhost:9000" 
-MINIO_ACCESS_KEY = "admin"  # Clé d'accès par défaut
-MINIO_SECRET_KEY = "admin123"  # Clé secrète par défaut
-MINIO_BUCKET_NAME = "kafka-events" # Nom du nouveau bucket pour MinIO
-MINIO_SECURE = False # Mettez à True si vous utilisez HTTPS
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
+MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
+MINIO_SECURE = os.getenv("MINIO_SECURE") == 'True' 
 
 # 1. Initialisation du client MinIO
 # Ce client sera utilisé pour interagir avec votre instance MinIO.
@@ -100,9 +104,9 @@ async def consume_and_archive():
         return # Arrête le script si le bucket n'est pas accessible
 
     consumer = AIOKafkaConsumer(
-        KAFKA_TOPIC,
+        KAFKA_TOPIC_USER_EVENT,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        group_id=KAFKA_CONSUMER_GROUP,
+        group_id=KAFKA_CONSUMER_GROUP_MINIO,
         auto_offset_reset='earliest'
     )
     await consumer.start()

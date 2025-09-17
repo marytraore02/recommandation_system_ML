@@ -6,13 +6,21 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import math
 import logging
+from minio import Minio
+from dotenv import load_dotenv
+import os
+from minio.error import S3Error
+
+load_dotenv()
+
+MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class EnhancedPopularityAnalyzer:
-    def __init__(self, redis_config=None, pg_config=None):
+    def __init__(self, redis_config=None, pg_config=None, minio_config=None):
         """
         Analyseur de popularité étendu avec analytics par pays/catégorie
         
@@ -22,6 +30,8 @@ class EnhancedPopularityAnalyzer:
         """
         self.redis_client = None
         self.pg_connection = None
+        self.minio_client = None # Ajout de l'attribut minio_client
+        self.minio_bucket_name = None # Pour stocker le nom du bucket
         
         # Configuration des poids pour le calcul de popularité
         self.event_weights = {
@@ -52,6 +62,29 @@ class EnhancedPopularityAnalyzer:
             except Exception as e:
                 logger.error(f"❌ Erreur connexion PostgreSQL: {e}")
 
+        if minio_config:
+            try:
+                # Copier la config pour ne pas modifier l'original
+                client_config = minio_config.copy()
+                self.minio_bucket_name = client_config.pop('bucket_name')
+                
+                # S'assurer que le bucket_name existe avant de continuer
+                if not self.minio_bucket_name:
+                    raise ValueError("Le 'bucket_name' est manquant dans la configuration MinIO.")
+
+                self.minio_client = Minio(**client_config)
+                
+                found = self.minio_client.bucket_exists(self.minio_bucket_name)
+                if found:
+                    logger.info(f"✅ Connexion MinIO établie et bucket '{self.minio_bucket_name}' trouvé.")
+                else:
+                    logger.error(f"❌ Bucket MinIO '{self.minio_bucket_name}' non trouvé.")
+                    self.minio_client = None
+            except (S3Error, ValueError, KeyError) as e: # Capturer les erreurs spécifiques
+                logger.error(f"❌ Erreur de configuration ou de connexion MinIO: {e}")
+                self.minio_client = None # S'assurer que le client est invalidé
+
+
     def load_events_from_json(self, json_file):
         """Charge les événements depuis un fichier JSON"""
         try:
@@ -63,6 +96,57 @@ class EnhancedPopularityAnalyzer:
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement du JSON: {e}")
             return []
+    
+    def load_events_from_minio(self, hours_back=24):
+        """Charge les événements des X dernières heures depuis MinIO."""
+        if not self.minio_client:
+            logger.error("❌ Pas de connexion MinIO disponible.")
+            return []
+
+        logger.info(f"⬇️ Chargement des événements des {hours_back} dernières heures depuis MinIO...")
+        
+        # 1. Déterminer les préfixes horaires à scanner
+        # Le format est : events/year=YYYY/month=MM/day=DD/hour=HH/
+        now = datetime.now(timezone.utc)
+        prefixes_to_scan = set()
+        for i in range(hours_back + 1): # +1 pour inclure l'heure actuelle
+            target_time = now - timedelta(hours=i)
+            prefix = (
+                f"events/year={target_time.year}/"
+                f"month={target_time.month:02d}/"
+                f"day={target_time.day:02d}/"
+                f"hour={target_time.hour:02d}/"
+            )
+            prefixes_to_scan.add(prefix)
+
+        all_events = []
+        # 2. Lister et télécharger les objets pour chaque préfixe
+        for prefix in prefixes_to_scan:
+            try:
+                objects = self.minio_client.list_objects(
+                    self.minio_bucket_name, prefix=prefix, recursive=True
+                )
+                for obj in objects:
+                    if obj.object_name.endswith('.jsonl'):
+                        logger.info(f"  -> Lecture du fichier : {obj.object_name}")
+                        response = self.minio_client.get_object(self.minio_bucket_name, obj.object_name)
+                        content_bytes = response.read()
+                        
+                        # 3. Parser le contenu JSONL (un JSON par ligne)
+                        content_str = content_bytes.decode('utf-8')
+                        for line in content_str.strip().split('\n'):
+                            if line:
+                                try:
+                                    all_events.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    logger.warning(f"⚠️ Ligne JSON invalide ignorée dans {obj.object_name}")
+                        response.close()
+                        response.release_conn()
+            except Exception as e:
+                logger.error(f"❌ Erreur lors de la lecture du préfixe '{prefix}' depuis MinIO: {e}")
+
+        logger.info(f"📁 {len(all_events)} événements chargés depuis MinIO.")
+        return all_events
     
     def parse_timestamp(self, timestamp_str):
         """Parse un timestamp de manière robuste"""
@@ -260,26 +344,30 @@ class EnhancedPopularityAnalyzer:
         
         return final_scores
 
-    def analyze_comprehensive(self, events_source, source_type="json", hours_back=24):
+    def analyze_comprehensive(self, events_source=None, source_type="json", hours_back=24):
         """Analyse comprehensive avec toutes les métriques"""
         logger.info("🚀 Début de l'analyse comprehensive")
         
         # Charger les événements
+        all_events = []
         if source_type == "json":
+            # Si la source est JSON, events_source ne doit pas être vide
+            if not events_source:
+                logger.error("❌ Pour source_type='json', le paramètre 'events_source' (chemin du fichier) est requis.")
+                return
             all_events = self.load_events_from_json(events_source)
-        elif source_type == "postgresql":
-            all_events = self.load_events_from_postgresql(events_source)
+        elif source_type == "minio":
+            all_events = self.load_events_from_minio(hours_back=hours_back) 
         else:
             logger.error(f"❌ Type de source non supporté: {source_type}")
             return
-        
-        if not all_events:
-            logger.error("❌ Aucun événement chargé")
-            return
-        
-        # Filtrer les événements récents
+
         recent_events = self.filter_events_by_timerange(all_events, hours_back=hours_back)
         
+        if not recent_events:
+            logger.warning("⚠️ Aucun événement récent à analyser après filtrage.")
+            return
+            
         results = {}
         
         # 1. Analyse par pays
@@ -586,9 +674,9 @@ def main():
     
     # Configuration Redis (optionnel)
     redis_config = {
-        'host': 'localhost',
-        'port': 6379,
-        'db': 0,
+        'host': os.getenv("REDIS_HOST"),
+        'port': os.getenv("REDIS_PORT"),
+        'db': os.getenv("REDIS_DB"),
         'decode_responses': True
     }
     
@@ -600,35 +688,45 @@ def main():
         'password': 'postgres',
         'port': 5432
     }
+
+    minio_config = {
+        'endpoint': os.getenv("MINIO_ENDPOINT"),
+        'access_key': os.getenv("MINIO_ACCESS_KEY"),
+        'secret_key': os.getenv("MINIO_SECRET_KEY"),
+        'secure': os.getenv("MINIO_SECURE") == 'True', 
+        'bucket_name': os.getenv("MINIO_BUCKET_NAME")
+    }
     
     try:
         # Créer l'analyseur étendu
         analyzer = EnhancedPopularityAnalyzer(
-            redis_config=redis_config,  # Commentez si pas de Redis
-            pg_config=pg_config         # Commentez si pas de PostgreSQL
+            redis_config=redis_config,  
+            pg_config=pg_config,    
+            minio_config=minio_config 
         )
         
-        # Lancer l'analyse comprehensive
+        # # Lancer l'analyse comprehensive
+        # results = analyzer.analyze_comprehensive(
+        #     events_source="user_events2.json",
+        #     source_type="minio",
+        #     hours_back=24
+        # )
+
         results = analyzer.analyze_comprehensive(
-            events_source="user_events2.json",
-            source_type="json",
+            source_type="minio",
             hours_back=24
         )
         
-        # Stocker les résultats
-        analyzer.store_comprehensive_results(
-            results, 
-            store_redis=True,      # Mettre False si pas de Redis
-            store_postgresql=False  # Mettre False si pas de PostgreSQL
-        )
-        
-        logger.info("✅ Analyse comprehensive terminée avec succès!")
-        
-        # # Optionnel: Sauvegarder les résultats en JSON
-        # with open('comprehensive_analytics_results.json', 'w', encoding='utf-8') as f:
-        #     json.dump(results, f, indent=2, ensure_ascii=False, default=str)
-        # logger.info("💾 Résultats sauvegardés dans comprehensive_analytics_results.json")
-        
+        if results:
+            analyzer.store_comprehensive_results(
+                results,  
+                store_redis=True,
+                store_postgresql=False
+            )
+            logger.info("✅ Analyse comprehensive terminée avec succès!")
+        else:
+            logger.info("ℹ️ Analyse terminée, mais aucun résultat n'a été généré (probablement pas de données récentes).")
+
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'analyse comprehensive: {e}")
 
