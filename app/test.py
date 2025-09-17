@@ -7,9 +7,7 @@ from sqlalchemy import select, func, and_
 import models
 import schemas2
 from models import RessourceModel, CagnottePostModel, CagnotteModel, UserModel, CategorieModel
-from schemas2 import CagnottePostFeedResponse, RessourceResponse, Author, CagnotteSimpleResponse, TypeRessource
-
-
+from schemas2 import CagnottePostFeedResponse, RessourceResponse, Author, CagnotteSimpleResponse, TypeRessource, Ressource
 import asyncio
 from collections import defaultdict
 import logging
@@ -23,16 +21,13 @@ from sqlalchemy.orm import joinedload, Session
 from sqlalchemy.orm import selectinload, aliased
 import uuid as uuid_pkg
 from sqlalchemy import select, func, union_all, literal_column
-from sqlalchemy.dialects.postgresql import UUID # ou autre selon votre DB
-# from sqlalchemy.sql.window import Window
-# from sqlalchemy.sql import window
-
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import case
 
 from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, HTTPException, Query, status, Depends, APIRouter
 from contextlib import asynccontextmanager
 from datetime import datetime
-# from uuid import UUID
 import random
 from decimal import Decimal
 from pydantic import BaseModel, Field
@@ -103,12 +98,7 @@ async def get_kafka_producer() -> AIOKafkaProducer:
 
 
 
-# Assurez-vous d'avoir des modèles pour Favorite (Like) et Commentaire
-# Ex: models.FavoriteModel, models.CommentaireModel
 
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-# FONCTION HELPER POUR LA TRANSFORMATION (logique Java traduite en Python)
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 def build_feed_response(
     post: models.CagnottePostModel, 
     ressources: List[models.RessourceModel],
@@ -185,8 +175,10 @@ def build_feed_response(
     )
     return feed_item
 
+
+
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-# ENDPOINT PRINCIPAL
+# Analytiques & Recommandations
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 @app.get("/recommendations/feed/", response_model=List[schemas2.CagnottePostFeedResponse])
 async def get_recommendations_feed(
@@ -302,3 +294,218 @@ async def get_recommendations_feed(
         
     random.shuffle(final_response)
     return final_response
+
+
+@app.get("/countries/popularity/{country}")
+async def get_country_popularity(
+    country: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de popularité pour un pays spécifique
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_country")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
+        
+        countries_data = json.loads(data)
+        
+        country_data = countries_data.get(country)
+        if not country_data:
+            raise HTTPException(status_code=404, detail=f"Pays '{country}' non trouvé")
+        
+        return {
+            "status": "success",
+            "data": country_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour {country}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@app.get("/countries/popularity/{country}/feed/", response_model=List[schemas2.CagnottePostFeedResponse])
+async def get_country_popularity_feed(
+    country: str,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère un feed des posts les plus populaires pour un pays,
+    basé sur les analyses stockées dans Redis.
+    """
+    # ===================================================================
+    # ÉTAPE 1: RÉCUPÉRER LES IDs DES VIDÉOS POPULAIRES DEPUIS REDIS
+    # ===================================================================
+    try:
+        data = await redis.get("analytics_popularity_by_country")
+        if not data:
+            return [] # Pas de données, on retourne une liste vide
+        
+        countries_data = json.loads(data)
+        country_data = countries_data.get(country)
+        
+        if not country_data:
+            return [] # Pays non trouvé, on retourne une liste vide
+
+        top_videos = country_data.get("top_videos", [])
+        if not top_videos:
+            return []
+
+        # On extrait les IDs et on gère la conversion en int si nécessaire
+        video_ids = [int(item["video_id"]) for item in top_videos]
+
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Erreur de données de popularité pour {country}: {e}")
+        raise HTTPException(status_code=500, detail="Données de popularité invalides ou malformées")
+
+    # ===================================================================
+    # ÉTAPE 2: TROUVER LES POSTS CORRESPONDANTS DANS L'ORDRE DE POPULARITÉ
+    # ===================================================================
+    
+    # On crée une map pour pouvoir trier les résultats de la BDD dans le même ordre que Redis
+    order_map = {video_id: index for index, video_id in enumerate(video_ids)}
+    order_logic = case(order_map, value=models.RessourceModel.id)
+
+    # Requête pour trouver les posts en joignant sur les ressources
+    # et en triant selon l'ordre de popularité de Redis
+    Post = models.CagnottePostModel
+    Ressource = models.RessourceModel
+    stmt_posts = (
+        select(Post)
+        .options(selectinload(Post.cagnotte).selectinload(models.CagnotteModel.categorie), selectinload(Post.author))
+        .join(Ressource, Post.id == Ressource.reference)
+        .where(Ressource.id.in_(video_ids))
+        .order_by(order_logic) # <-- TRI MAGIQUE ICI
+    )
+    
+    result_posts = await db.execute(stmt_posts)
+    relevant_posts = result_posts.scalars().unique().all()
+
+    if not relevant_posts:
+        return []
+
+    # ===================================================================
+    # ÉTAPE 3: APPLIQUER L'ENRICHISSEMENT (LOGIQUE EXISTANTE)
+    # ===================================================================
+    post_ids = [p.id for p in relevant_posts]
+    post_cagnotte_ids = [p.cagnotte.id for p in relevant_posts]
+
+    # 3.1 - Toutes les ressources, triées par `order_index`
+    stmt_resources = select(Ressource).where(Ressource.reference.in_(post_ids)).order_by(Ressource.order_index.asc())
+    result_resources = await db.execute(stmt_resources)
+    resources_by_post_id = defaultdict(list)
+    for res in result_resources.scalars().all():
+        resources_by_post_id[res.reference].append(res)
+
+    # # 3.2 - Tous les comptes de likes (sur la cagnotte)
+    # # ... (la même requête que précédemment)
+    # likes_by_cagnotte_id = { ... }
+
+    # # 3.3 - Tous les comptes de commentaires (sur le post)
+    # # ... (la même requête que précédemment)
+    # comments_by_post_id = { ... }
+
+    # ===================================================================
+    # ÉTAPE 4: ASSEMBLER LA RÉPONSE FINALE
+    # ===================================================================
+    final_response = []
+    for post in relevant_posts:
+        ressources = resources_by_post_id.get(post.id, [])
+        # likes_count = likes_by_cagnotte_id.get(post.cagnotte.id, 0)
+        # comments_count = comments_by_post_id.get(post.id, 0)
+        
+        # feed_item = build_feed_response(post, ressources, likes_count, comments_count)
+        feed_item = build_feed_response(post, ressources)
+        final_response.append(feed_item)
+        
+    return final_response
+
+
+
+
+
+# =========================POPULARITY==========================================
+
+#Liste des catégories par popularité
+@app.get("/categories/popularity")
+async def get_categories_popularity(
+    redis: aioredis.Redis = Depends(get_redis_client),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Nombre maximum de catégories à retourner"),
+    sort_by: str = Query("popularity_score", description="Critère de tri"),
+    order: str = Query("desc", description="Ordre: asc ou desc")
+):
+    """
+    Récupère la popularité par catégorie depuis Redis
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité par catégorie non trouvées")
+        
+        categories_data = json.loads(data)
+        categories_list = list(categories_data.values())
+        
+        # Tri
+        reverse = order.lower() == "desc"
+        try:
+            categories_list.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+        except (KeyError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Critère de tri '{sort_by}' invalide")
+        
+        # Limitation
+        if limit:
+            categories_list = categories_list[:limit]
+        
+        return {
+            "status": "success",
+            "data": categories_list,
+            "total_categories": len(categories_data),
+            "returned_categories": len(categories_list),
+            "sorted_by": sort_by,
+            "order": order,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données catégories: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+#étails pour une catégorie spécifique
+@app.get("/analytics/categories/popularity/{category_id}")
+async def get_category_popularity(
+    category_id: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de popularité pour une catégorie spécifique
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_category")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
+        
+        categories_data = json.loads(data)
+        category_data = categories_data.get(category_id)
+        if not category_data:
+            raise HTTPException(status_code=404, detail=f"Catégorie '{category_id}' non trouvée")
+        
+        return {
+            "status": "success",
+            "data": category_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour la catégorie {category_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+# =========================POPULARITY==========================================
+

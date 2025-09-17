@@ -4,6 +4,9 @@ from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
+import enum
+from typing import List, Dict, Any, Optional
+
 
 # Vous devrez définir ces Enums pour correspondre à votre base de données
 class TypeRessource(str, Enum):
@@ -16,9 +19,59 @@ class TypePost(str, Enum):
     MEDAIA_ONLY = "MEDIA_ONLY"
     # ... autres types
 
+class TypeRessource(str, enum.Enum):
+    JUSTIFICATIF = "JUSTIFICATIF"
+    CAGNOTTE = "CAGNOTTE"
+    TEMOIGNAGE = "TEMOIGNAGE"
+    POST_IMAGE = "POST_IMAGE"
+    POST_VIDEO = "POST_VIDEO"
+    POST_THUMBNAIL = "POST_THUMBNAIL"
+    POST_PREVIEW = "POST_PREVIEW"
+    POST_DOCUMENT = "POST_DOCUMENT"
+
+class StatutCagnotte(str, enum.Enum):
+    EN_COURS = "EN_COURS"
+    VALIDE = "VALIDE"
+    SUSPENDU = "SUSPENDU"
+
+class TypeCagnotte(str, enum.Enum):
+    PUBLIC = "PUBLIC"
+    PRIVE = "PRIVE"
+
+
+class Ressource(BaseModel):
+    id: int
+    file: str
+    type: Optional[TypeRessource] = None
+    reference: Optional[UUID] = None
+    thumbnail_url: Optional[str] = None
+    duration: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_size: Optional[int] = None
+    order_index: Optional[int] = 0
+    alt_text: Optional[str] = None
+    mime_type: Optional[str] = None
+
+    class Config:
+        from_attributes = True 
+
+class Categorie(BaseModel):
+    id: UUID
+    name: str = Field(..., max_length=255)
+    # description: Optional[str] = None
+    # picture: Optional[str] = None
+    # created_date: datetime
+    # last_modified_date: datetime
+    # deleted: bool
+    
+    class Config:
+        from_attributes = True
+
 class CagnotteSimpleResponse(BaseModel):
     id: UUID
     name: str
+    categorie: Categorie
 
     class Config:
         from_attributes=True
@@ -41,6 +94,53 @@ class RessourceResponse(BaseModel):
 
     class Config:
         from_attributes=True
+
+
+class Cagnotte(BaseModel):
+    id: UUID
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    pays: str = Field(..., max_length=100)
+    date_start: Optional[datetime] = None
+    date_end: Optional[datetime] = None
+    objectif: Optional[int] = Field(None, ge=0)
+    total_solde: int = Field(0, ge=0)
+    current_solde: int = Field(0, ge=0)
+    statut: Optional[StatutCagnotte] = StatutCagnotte.EN_COURS
+    type: Optional[TypeCagnotte] = TypeCagnotte.PUBLIC
+    
+    categorie: Categorie
+    admin: Author  # Utiliser le schéma Author pour la relation
+    
+    created_date: datetime
+    last_modified_date: datetime
+    deleted: bool   
+
+    class Config:
+        from_attributes = True
+
+
+class CagnottePost(BaseModel):
+    id: UUID
+    type: Optional[str] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+    order_index: Optional[int]
+    is_main_post: bool
+    likes_count: int
+    comments_count: int
+    views_count: int
+    shares_count: int
+    is_pinned: bool
+    deleted: bool
+    created_date: datetime
+    author: Author
+    cagnotte: Cagnotte
+    # ressource: Optional[Ressource] = None
+
+    class Config:
+        from_attributes = True 
+
         
 class CagnottePostFeedResponse(BaseModel):
     id: UUID

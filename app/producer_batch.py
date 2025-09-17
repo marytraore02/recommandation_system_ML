@@ -628,7 +628,7 @@ async def get_countries_popularity(
         logger.error(f"Erreur lors de la récupération des données pays: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-@app.get("/analytics/countries/popularity/{country}")
+@app.get("/analytics/countries/popularity/enriched/{country}")
 async def get_country_popularity(
     country: str,
     redis: aioredis.Redis = Depends(get_redis_client),
@@ -707,6 +707,40 @@ async def get_country_popularity(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des données pour {country}: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
+@app.get("/countries/popularity2/{country}")
+async def get_country_popularity(
+    country: str,
+    redis: aioredis.Redis = Depends(get_redis_client)
+):
+    """
+    Récupère les détails de popularité pour un pays spécifique
+    """
+    try:
+        data = await redis.get("analytics_popularity_by_country")
+        if not data:
+            raise HTTPException(status_code=404, detail="Données de popularité non trouvées")
+        
+        countries_data = json.loads(data)
+        
+        country_data = countries_data.get(country)
+        if not country_data:
+            raise HTTPException(status_code=404, detail=f"Pays '{country}' non trouvé")
+        
+        return {
+            "status": "success",
+            "data": country_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Erreur de décodage des données Redis")
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des données pour {country}: {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
 
 #Liste des catégories par popularité
 @app.get("/analytics/categories/popularity")
