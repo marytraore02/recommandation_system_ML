@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class EnhancedPopularityAnalyzer:
-    def __init__(self, redis_config=None, pg_config=None, minio_config=None):
+    def __init__(self, redis_config=None, minio_config=None):
         """
         Analyseur de popularité étendu avec analytics par pays/catégorie
         
@@ -29,7 +29,6 @@ class EnhancedPopularityAnalyzer:
             pg_config: Configuration PostgreSQL pour la base de données
         """
         self.redis_client = None
-        self.pg_connection = None
         self.minio_client = None # Ajout de l'attribut minio_client
         self.minio_bucket_name = None # Pour stocker le nom du bucket
         
@@ -54,13 +53,6 @@ class EnhancedPopularityAnalyzer:
                 logger.info("✅ Connexion Redis établie")
             except Exception as e:
                 logger.error(f"❌ Erreur connexion Redis: {e}")
-        
-        if pg_config:
-            try:
-                self.pg_connection = psycopg2.connect(**pg_config)
-                logger.info("✅ Connexion PostgreSQL établie")
-            except Exception as e:
-                logger.error(f"❌ Erreur connexion PostgreSQL: {e}")
 
         if minio_config:
             try:
@@ -395,9 +387,12 @@ class EnhancedPopularityAnalyzer:
         self.display_comprehensive_results(results)
         
         return results
+    
+
+    
 
     def calculate_trending_by_geography(self, events, recent_hours=1, comparison_hours=2):
-        """Calcule les tendances par pays"""
+        """Calcule les tendances par pays avec IDs des vidéos"""
         # now = self.parse_timestamp("2025-08-29T13:00:00")
         now = datetime.now(timezone.utc) 
         recent_cutoff = now - timedelta(hours=recent_hours)
@@ -424,9 +419,44 @@ class EnhancedPopularityAnalyzer:
         all_countries = set(list(recent_scores.keys()) + list(comparison_scores.keys()))
         
         for country in all_countries:
-            recent_score = recent_scores.get(country, {}).get('popularity_score', 0)
-            comparison_score = comparison_scores.get(country, {}).get('popularity_score', 0)
+            recent_data = recent_scores.get(country, {})
+            comparison_data = comparison_scores.get(country, {})
             
+            recent_score = recent_data.get('popularity_score', 0)
+            comparison_score = comparison_data.get('popularity_score', 0)
+            
+            # Calculer les tendances des vidéos individuelles
+            recent_videos = {video['video_id']: video['score'] for video in recent_data.get('top_videos', [])}
+            comparison_videos = {video['video_id']: video['score'] for video in comparison_data.get('top_videos', [])}
+            
+            video_trends = {}
+            all_video_ids = set(list(recent_videos.keys()) + list(comparison_videos.keys()))
+            
+            for video_id in all_video_ids:
+                recent_video_score = recent_videos.get(video_id, 0)
+                comparison_video_score = comparison_videos.get(video_id, 0)
+                
+                if comparison_video_score == 0:
+                    video_velocity = 100.0 if recent_video_score > 0 else 0.0
+                else:
+                    video_velocity = ((recent_video_score - comparison_video_score) / comparison_video_score) * 100
+                
+                video_trending_score = recent_video_score + (video_velocity * 0.1)
+                
+                video_trends[video_id] = {
+                    'video_id': video_id,
+                    'trending_score': round(video_trending_score, 2),
+                    'current_score': recent_video_score,
+                    'previous_score': comparison_video_score,
+                    'velocity_percent': round(video_velocity, 1),
+                    'trend_direction': 'up' if video_velocity > 10 else 'down' if video_velocity < -10 else 'stable'
+                }
+            
+            # Trier les vidéos par score de tendance
+            top_trending_videos = sorted(video_trends.values(), 
+                                    key=lambda x: x['trending_score'], reverse=True)[:10]
+            
+            # Calculer la vélocité globale du pays
             if comparison_score == 0:
                 velocity = 100.0 if recent_score > 0 else 0.0
             else:
@@ -440,13 +470,20 @@ class EnhancedPopularityAnalyzer:
                 'current_score': recent_score,
                 'previous_score': comparison_score,
                 'velocity_percent': round(velocity, 1),
-                'trend_direction': 'up' if velocity > 10 else 'down' if velocity < -10 else 'stable'
+                'trend_direction': 'up' if velocity > 10 else 'down' if velocity < -10 else 'stable',
+                'trending_videos': top_trending_videos,
+                'total_trending_videos': len(video_trends),
+                'unique_users_recent': recent_data.get('unique_users', 0),
+                'unique_users_previous': comparison_data.get('unique_users', 0),
+                'total_events_recent': recent_data.get('total_events', 0),
+                'total_events_previous': comparison_data.get('total_events', 0),
+                'last_updated': datetime.now().isoformat()
             }
         
         return trending_scores
 
     def calculate_trending_by_category(self, events, recent_hours=1, comparison_hours=2):
-        """Calcule les tendances par catégorie"""
+        """Calcule les tendances par catégorie avec IDs des vidéos"""
         # now = self.parse_timestamp("2025-08-29T13:00:00")
         now = datetime.now(timezone.utc) 
         recent_cutoff = now - timedelta(hours=recent_hours)
@@ -473,9 +510,44 @@ class EnhancedPopularityAnalyzer:
         all_categories = set(list(recent_scores.keys()) + list(comparison_scores.keys()))
         
         for category in all_categories:
-            recent_score = recent_scores.get(category, {}).get('popularity_score', 0)
-            comparison_score = comparison_scores.get(category, {}).get('popularity_score', 0)
+            recent_data = recent_scores.get(category, {})
+            comparison_data = comparison_scores.get(category, {})
             
+            recent_score = recent_data.get('popularity_score', 0)
+            comparison_score = comparison_data.get('popularity_score', 0)
+            
+            # Calculer les tendances des vidéos individuelles
+            recent_videos = {video['video_id']: video['score'] for video in recent_data.get('top_videos', [])}
+            comparison_videos = {video['video_id']: video['score'] for video in comparison_data.get('top_videos', [])}
+            
+            video_trends = {}
+            all_video_ids = set(list(recent_videos.keys()) + list(comparison_videos.keys()))
+            
+            for video_id in all_video_ids:
+                recent_video_score = recent_videos.get(video_id, 0)
+                comparison_video_score = comparison_videos.get(video_id, 0)
+                
+                if comparison_video_score == 0:
+                    video_velocity = 100.0 if recent_video_score > 0 else 0.0
+                else:
+                    video_velocity = ((recent_video_score - comparison_video_score) / comparison_video_score) * 100
+                
+                video_trending_score = recent_video_score + (video_velocity * 0.1)
+                
+                video_trends[video_id] = {
+                    'video_id': video_id,
+                    'trending_score': round(video_trending_score, 2),
+                    'current_score': recent_video_score,
+                    'previous_score': comparison_video_score,
+                    'velocity_percent': round(video_velocity, 1),
+                    'trend_direction': 'up' if video_velocity > 10 else 'down' if video_velocity < -10 else 'stable'
+                }
+            
+            # Trier les vidéos par score de tendance
+            top_trending_videos = sorted(video_trends.values(), 
+                                    key=lambda x: x['trending_score'], reverse=True)[:5]
+            
+            # Calculer la vélocité globale de la catégorie
             if comparison_score == 0:
                 velocity = 100.0 if recent_score > 0 else 0.0
             else:
@@ -489,10 +561,42 @@ class EnhancedPopularityAnalyzer:
                 'current_score': recent_score,
                 'previous_score': comparison_score,
                 'velocity_percent': round(velocity, 1),
-                'trend_direction': 'up' if velocity > 10 else 'down' if velocity < -10 else 'stable'
+                'trend_direction': 'up' if velocity > 10 else 'down' if velocity < -10 else 'stable',
+                'trending_videos': top_trending_videos,
+                'total_trending_videos': len(video_trends),
+                'unique_users_recent': recent_data.get('unique_users', 0),
+                'unique_users_previous': comparison_data.get('unique_users', 0),
+                'total_events_recent': recent_data.get('total_events', 0),
+                'total_events_previous': comparison_data.get('total_events', 0),
+                'countries_recent': recent_data.get('countries', []),
+                'countries_previous': comparison_data.get('countries', []),
+                'last_updated': datetime.now().isoformat()
             }
         
         return trending_scores
+
+
+    def store_comprehensive_results(self, results, store_redis=True):
+            """Stocke tous les résultats de l'analyse comprehensive"""
+            if store_redis and self.redis_client:
+                try:
+                    # Stocker chaque type d'analyse séparément
+                    for key, data in results.items():
+                        redis_key = f"analytics_{key}"
+                        self.redis_client.setex(redis_key, 3600, json.dumps(data, ensure_ascii=False, default=str))
+                    
+                    # Stocker les métadonnées
+                    metadata = {
+                        'last_analysis': datetime.now().isoformat(),
+                        'analysis_types': list(results.keys()),
+                        'expires_at': (datetime.now() + timedelta(seconds=3600)).isoformat()
+                    }
+                    self.redis_client.setex("comprehensive_analytics_metadata", 3600, json.dumps(metadata))
+                    
+                    logger.info("✅ Résultats comprehensive stockés dans Redis")
+                except Exception as e:
+                    logger.error(f"❌ Erreur stockage Redis comprehensive: {e}")
+            
 
     def display_comprehensive_results(self, results, show_top=5):
         """Affiche tous les résultats de l'analyse comprehensive"""
@@ -508,64 +612,129 @@ class EnhancedPopularityAnalyzer:
                                 key=lambda x: x['popularity_score'], reverse=True)
             for i, country in enumerate(country_data[:show_top], 1):
                 print(f"{i:2d}. {country['country']:20} | "
-                      f"Score: {country['popularity_score']:8.1f} | "
-                      f"Utilisateurs: {country['unique_users']:4d} | "
-                      f"Vidéos: {country['video_count']:3d} | "
-                      f"Complétion: {country['avg_completion_rate']:.0%}")
+                    f"Score: {country['popularity_score']:8.1f} | "
+                    f"Utilisateurs: {country['unique_users']:4d} | "
+                    f"Vidéos: {country['video_count']:3d} | "
+                    f"Complétion: {country['avg_completion_rate']:.0%}")
         
         # Popularité par catégorie
         if 'popularity_by_category' in results:
             print(f"\n📂 TOP {show_top} CATÉGORIES PAR POPULARITÉ:")
             print("-" * 80)
             category_data = sorted(results['popularity_by_category'].values(), 
-                                 key=lambda x: x['popularity_score'], reverse=True)
+                                key=lambda x: x['popularity_score'], reverse=True)
             for i, category in enumerate(category_data[:show_top], 1):
                 category_name = category['category'][:20] if len(category['category']) > 20 else category['category']
                 print(f"{i:2d}. {category_name:20} | "
-                      f"Score: {category['popularity_score']:8.1f} | "
-                      f"Utilisateurs: {category['unique_users']:4d} | "
-                      f"Pays: {category['countries_count']:2d} | "
-                      f"Complétion: {category['avg_completion_rate']:.0%}")
+                    f"Score: {category['popularity_score']:8.1f} | "
+                    f"Utilisateurs: {category['unique_users']:4d} | "
+                    f"Pays: {category['countries_count']:2d} | "
+                    f"Complétion: {category['avg_completion_rate']:.0%}")
         
-        # Tendances par pays
+        # Tendances par pays avec vidéos
         if 'trending_by_country' in results:
             print(f"\n🔥 TOP {show_top} PAYS TENDANCES:")
             print("-" * 80)
             trending_countries = sorted(results['trending_by_country'].values(), 
-                                      key=lambda x: x['trending_score'], reverse=True)
+                                    key=lambda x: x['trending_score'], reverse=True)
             for i, country in enumerate(trending_countries[:show_top], 1):
                 trend_icon = "📈" if country['trend_direction'] == 'up' else "📉" if country['trend_direction'] == 'down' else "➡️"
                 print(f"{i:2d}. {trend_icon} {country['country']:20} | "
-                      f"Score: {country['trending_score']:8.1f} | "
-                      f"Vélocité: {country['velocity_percent']:+6.1f}% | "
-                      f"Direction: {country['trend_direction']}")
+                    f"Score: {country['trending_score']:8.1f} | "
+                    f"Vélocité: {country['velocity_percent']:+6.1f}% | "
+                    f"Direction: {country['trend_direction']} | "
+                    f"Vidéos tendance: {country['total_trending_videos']}")
+                
+                # Afficher les top 3 vidéos en tendance pour ce pays
+                if country.get('trending_videos'):
+                    print(f"     └── Top vidéos en tendance:")
+                    for j, video in enumerate(country['trending_videos'][:3], 1):
+                        video_trend_icon = "📈" if video['trend_direction'] == 'up' else "📉" if video['trend_direction'] == 'down' else "➡️"
+                        video_id_display = video['video_id'][:10] + "..." if len(video['video_id']) > 10 else video['video_id']
+                        print(f"         {j}. {video_trend_icon} {video_id_display:15} | "
+                            f"Score: {video['trending_score']:6.1f} | "
+                            f"Vélocité: {video['velocity_percent']:+5.1f}%")
         
-        # Tendances par catégorie
+        # Tendances par catégorie avec vidéos
         if 'trending_by_category' in results:
             print(f"\n📊 TOP {show_top} CATÉGORIES TENDANCES:")
             print("-" * 80)
             trending_categories = sorted(results['trending_by_category'].values(), 
-                                       key=lambda x: x['trending_score'], reverse=True)
+                                    key=lambda x: x['trending_score'], reverse=True)
             for i, category in enumerate(trending_categories[:show_top], 1):
                 trend_icon = "📈" if category['trend_direction'] == 'up' else "📉" if category['trend_direction'] == 'down' else "➡️"
                 category_name = category['category'][:20] if len(category['category']) > 20 else category['category']
                 print(f"{i:2d}. {trend_icon} {category_name:20} | "
-                      f"Score: {category['trending_score']:8.1f} | "
-                      f"Vélocité: {category['velocity_percent']:+6.1f}% | "
-                      f"Direction: {category['trend_direction']}")
+                    f"Score: {category['trending_score']:8.1f} | "
+                    f"Vélocité: {category['velocity_percent']:+6.1f}% | "
+                    f"Direction: {category['trend_direction']} | "
+                    f"Vidéos tendance: {category['total_trending_videos']}")
+                
+                # Afficher les top 3 vidéos en tendance pour cette catégorie
+                if category.get('trending_videos'):
+                    print(f"     └── Top vidéos en tendance:")
+                    for j, video in enumerate(category['trending_videos'][:3], 1):
+                        video_trend_icon = "📈" if video['trend_direction'] == 'up' else "📉" if video['trend_direction'] == 'down' else "➡️"
+                        video_id_display = video['video_id'][:10] + "..." if len(video['video_id']) > 10 else video['video_id']
+                        print(f"         {j}. {video_trend_icon} {video_id_display:15} | "
+                            f"Score: {video['trending_score']:6.1f} | "
+                            f"Vélocité: {video['velocity_percent']:+5.1f}%")
+        
+        # Section dédiée aux vidéos les plus en tendance toutes catégories/pays confondus
+        if 'trending_by_country' in results and 'trending_by_category' in results:
+            print(f"\n🎥 TOP {show_top} VIDÉOS LES PLUS EN TENDANCE (GLOBAL):")
+            print("-" * 80)
+            
+            # Collecter toutes les vidéos en tendance
+            all_trending_videos = []
+            
+            # Depuis les pays
+            for country_data in results['trending_by_country'].values():
+                for video in country_data.get('trending_videos', []):
+                    video_copy = video.copy()
+                    video_copy['source_type'] = 'country'
+                    video_copy['source_name'] = country_data['country']
+                    all_trending_videos.append(video_copy)
+            
+            # Depuis les catégories
+            for category_data in results['trending_by_category'].values():
+                for video in category_data.get('trending_videos', []):
+                    video_copy = video.copy()
+                    video_copy['source_type'] = 'category'
+                    video_copy['source_name'] = category_data['category']
+                    all_trending_videos.append(video_copy)
+            
+            # Déduplication et tri par score de tendance
+            video_scores = {}
+            for video in all_trending_videos:
+                video_id = video['video_id']
+                if video_id not in video_scores or video['trending_score'] > video_scores[video_id]['trending_score']:
+                    video_scores[video_id] = video
+            
+            top_global_videos = sorted(video_scores.values(), 
+                                    key=lambda x: x['trending_score'], reverse=True)
+            
+            for i, video in enumerate(top_global_videos[:show_top], 1):
+                video_trend_icon = "📈" if video['trend_direction'] == 'up' else "📉" if video['trend_direction'] == 'down' else "➡️"
+                video_id_display = video['video_id'][:12] + "..." if len(video['video_id']) > 12 else video['video_id']
+                source_display = video['source_name'][:15] + "..." if len(video['source_name']) > 15 else video['source_name']
+                print(f"{i:2d}. {video_trend_icon} {video_id_display:15} | "
+                    f"Score: {video['trending_score']:8.1f} | "
+                    f"Vélocité: {video['velocity_percent']:+6.1f}% | "
+                    f"Source: {source_display} ({video['source_type']})")
         
         # Top vidéos par performance
         if 'content_performance' in results:
             print(f"\n🎥 TOP {show_top} VIDÉOS PAR QUALITÉ:")
             print("-" * 80)
             top_videos = sorted(results['content_performance'].values(), 
-                              key=lambda x: x['quality_score'], reverse=True)
+                            key=lambda x: x['quality_score'], reverse=True)
             for i, video in enumerate(top_videos[:show_top], 1):
                 print(f"{i:2d}. Video: {video['video_id'][:12]}... | "
-                      f"Qualité: {video['quality_score']:6.1f} | "
-                      f"Vues: {video['total_views']:4d} | "
-                      f"Complétion: {video['avg_completion_rate']:.0%} | "
-                      f"Partage: {video['share_rate']:.1%}")
+                    f"Qualité: {video['quality_score']:6.1f} | "
+                    f"Vues: {video['total_views']:4d} | "
+                    f"Complétion: {video['avg_completion_rate']:.0%} | "
+                    f"Partage: {video['share_rate']:.1%}")
         
         # Segmentation des utilisateurs
         if 'user_engagement' in results and 'user_segments' in results['user_engagement']:
@@ -581,9 +750,9 @@ class EnhancedPopularityAnalyzer:
                 for i, user in enumerate(segments['high_engagement'][:3], 1):
                     user_display = user['user_id'][:12] + "..." if len(user['user_id']) > 12 else user['user_id']
                     print(f"   {i}. {user_display} | "
-                          f"Score: {user['engagement_score']:6.1f} | "
-                          f"Vidéos: {user['videos_watched']:3d} | "
-                          f"Événements: {user['total_events']:3d}")
+                        f"Score: {user['engagement_score']:6.1f} | "
+                        f"Vidéos: {user['videos_watched']:3d} | "
+                        f"Événements: {user['total_events']:3d}")
         
         # Performance par device
         if 'user_engagement' in results and 'device_performance' in results['user_engagement']:
@@ -592,10 +761,10 @@ class EnhancedPopularityAnalyzer:
             print("-" * 80)
             for device, data in sorted(devices.items(), key=lambda x: x[1]['total_events'], reverse=True):
                 print(f"   {device:12} | "
-                      f"Utilisateurs: {data['unique_users']:4d} | "
-                      f"Événements: {data['total_events']:5d} | "
-                      f"Complétion: {data['avg_completion_rate']:.0%} | "
-                      f"Evt/User: {data['events_per_user']:4.1f}")
+                    f"Utilisateurs: {data['unique_users']:4d} | "
+                    f"Événements: {data['total_events']:5d} | "
+                    f"Complétion: {data['avg_completion_rate']:.0%} | "
+                    f"Evt/User: {data['events_per_user']:4.1f}")
         
         # Patterns temporels
         if 'user_engagement' in results and 'time_patterns' in results['user_engagement']:
@@ -606,67 +775,11 @@ class EnhancedPopularityAnalyzer:
                 total_events = sum(hours.values())
                 peak_hour = max(hours.items(), key=lambda x: x[1])[0] if hours else 0
                 print(f"   {day:10} | "
-                      f"Total événements: {total_events:5d} | "
-                      f"Heure de pointe: {peak_hour:2d}h")
+                    f"Total événements: {total_events:5d} | "
+                    f"Heure de pointe: {peak_hour:2d}h")
+                
 
-    def store_comprehensive_results(self, results, store_redis=True, store_postgresql=False):
-        """Stocke tous les résultats de l'analyse comprehensive"""
-        if store_redis and self.redis_client:
-            try:
-                # Stocker chaque type d'analyse séparément
-                for key, data in results.items():
-                    redis_key = f"analytics_{key}"
-                    self.redis_client.setex(redis_key, 3600, json.dumps(data, ensure_ascii=False, default=str))
-                
-                # Stocker les métadonnées
-                metadata = {
-                    'last_analysis': datetime.now().isoformat(),
-                    'analysis_types': list(results.keys()),
-                    'expires_at': (datetime.now() + timedelta(seconds=3600)).isoformat()
-                }
-                self.redis_client.setex("comprehensive_analytics_metadata", 3600, json.dumps(metadata))
-                
-                logger.info("✅ Résultats comprehensive stockés dans Redis")
-            except Exception as e:
-                logger.error(f"❌ Erreur stockage Redis comprehensive: {e}")
-        
-        if store_postgresql and self.pg_connection:
-            try:
-                cur = self.pg_connection.cursor()
-                
-                # Créer une table pour les analytics comprehensive
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS comprehensive_analytics (
-                        id SERIAL PRIMARY KEY,
-                        analysis_type VARCHAR(50) NOT NULL,
-                        analysis_key VARCHAR(100) NOT NULL,
-                        data JSONB NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(analysis_type, analysis_key)
-                    );
-                """)
-                
-                # Vider les anciennes données
-                cur.execute("DELETE FROM comprehensive_analytics WHERE created_at < NOW() - INTERVAL '24 hours'")
-                
-                # Insérer les nouvelles données
-                for analysis_type, analysis_data in results.items():
-                    if isinstance(analysis_data, dict):
-                        for key, value in analysis_data.items():
-                            cur.execute("""
-                                INSERT INTO comprehensive_analytics (analysis_type, analysis_key, data)
-                                VALUES (%s, %s, %s)
-                                ON CONFLICT (analysis_type, analysis_key) 
-                                DO UPDATE SET data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
-                            """, (analysis_type, str(key), json.dumps(value, default=str)))
-                
-                self.pg_connection.commit()
-                logger.info("✅ Résultats comprehensive stockés dans PostgreSQL")
-                
-            except Exception as e:
-                logger.error(f"❌ Erreur stockage PostgreSQL comprehensive: {e}")
-                if self.pg_connection:
-                    self.pg_connection.rollback()
+
 
 
 def main():
@@ -679,16 +792,6 @@ def main():
         'db': os.getenv("REDIS_DB"),
         'decode_responses': True
     }
-    
-    # Configuration PostgreSQL (optionnel)
-    pg_config = {
-        'host': 'localhost',
-        'database': 'postgres',
-        'user': 'postgres',
-        'password': 'postgres',
-        'port': 5432
-    }
-
     minio_config = {
         'endpoint': os.getenv("MINIO_ENDPOINT"),
         'access_key': os.getenv("MINIO_ACCESS_KEY"),
@@ -701,27 +804,24 @@ def main():
         # Créer l'analyseur étendu
         analyzer = EnhancedPopularityAnalyzer(
             redis_config=redis_config,  
-            pg_config=pg_config,    
             minio_config=minio_config 
-        )
-        
-        # Lancer l'analyse comprehensive
-        results = analyzer.analyze_comprehensive(
-            events_source="user_events2.json",
-            source_type="json",
-            hours_back=24
         )
 
         # results = analyzer.analyze_comprehensive(
         #     source_type="minio",
         #     hours_back=24
         # )
-        
+
+        results = analyzer.analyze_comprehensive(
+            events_source="user_events2.json",
+            source_type="json",
+            hours_back=24
+        )
+
         if results:
             analyzer.store_comprehensive_results(
                 results,  
                 store_redis=True,
-                store_postgresql=False
             )
             logger.info("✅ Analyse comprehensive terminée avec succès!")
         else:

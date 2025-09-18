@@ -8,36 +8,16 @@ import enum
 from typing import List, Dict, Any, Optional
 
 
-# Vous devrez définir ces Enums pour correspondre à votre base de données
-class TypeRessource(str, Enum):
-    POST_VIDEO = "POST_VIDEO"
-    POST_THUMBNAIL = "POST_THUMBNAIL"
-    POST_IMAGE = "POST_IMAGE"
-
-class TypePost(str, Enum):
-    INITIAL = "INITIAL"
-    MEDAIA_ONLY = "MEDIA_ONLY"
-    # ... autres types
 
 class TypeRessource(str, enum.Enum):
-    JUSTIFICATIF = "JUSTIFICATIF"
-    CAGNOTTE = "CAGNOTTE"
-    TEMOIGNAGE = "TEMOIGNAGE"
+    # JUSTIFICATIF = "JUSTIFICATIF"
+    # CAGNOTTE = "CAGNOTTE"
+    # TEMOIGNAGE = "TEMOIGNAGE"
     POST_IMAGE = "POST_IMAGE"
     POST_VIDEO = "POST_VIDEO"
     POST_THUMBNAIL = "POST_THUMBNAIL"
-    POST_PREVIEW = "POST_PREVIEW"
-    POST_DOCUMENT = "POST_DOCUMENT"
-
-class StatutCagnotte(str, enum.Enum):
-    EN_COURS = "EN_COURS"
-    VALIDE = "VALIDE"
-    SUSPENDU = "SUSPENDU"
-
-class TypeCagnotte(str, enum.Enum):
-    PUBLIC = "PUBLIC"
-    PRIVE = "PRIVE"
-
+    DOCUMENTCERTIFICATION = "DOCUMENTCERTIFICATION"
+    # POST_DOCUMENT = "POST_DOCUMENT"
 
 class Ressource(BaseModel):
     id: int
@@ -54,7 +34,16 @@ class Ressource(BaseModel):
     mime_type: Optional[str] = None
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+class RessourceResponse(BaseModel):
+    id: int
+    file: str
+    reference: UUID
+    type: TypeRessource
+
+    class Config:
+        from_attributes=True
 
 class Categorie(BaseModel):
     id: UUID
@@ -81,20 +70,19 @@ class Author(BaseModel):
     firstname: str
     lastname: str
     picture: Optional[str] = None
-    role: Optional[str] = None # Supposant que ce champ existe sur votre modèle User
+    # role: Optional[str] = None
 
     class Config:
         from_attributes=True
 
-class RessourceResponse(BaseModel):
-    id: int # En Java c'était Long, en Python ça peut être int
-    file: str
-    reference: UUID
-    type: TypeRessource
+class StatutCagnotte(str, enum.Enum):
+    EN_COURS = "EN_COURS"
+    VALIDE = "VALIDE"
+    SUSPENDU = "SUSPENDU"
 
-    class Config:
-        from_attributes=True
-
+class TypeCagnotte(str, enum.Enum):
+    PUBLIC = "PUBLIC"
+    PRIVE = "PRIVE"
 
 class Cagnotte(BaseModel):
     id: UUID
@@ -141,6 +129,10 @@ class CagnottePost(BaseModel):
     class Config:
         from_attributes = True 
 
+
+class TypePost(str, Enum):
+    INITIAL = "INITIAL"
+    MEDAIA_ONLY = "MEDIA_ONLY"
         
 class CagnottePostFeedResponse(BaseModel):
     id: UUID
@@ -156,6 +148,7 @@ class CagnottePostFeedResponse(BaseModel):
     created_date: datetime = Field(..., alias='createdDate')
     is_pinned: bool = Field(False, alias='isPinned')
     medias: List[RessourceResponse] = []
+
     main_media_url: Optional[str] = Field(None, alias='mainMediaUrl')
     thumbnail_url: Optional[str] = Field(None, alias='thumbnailUrl')
     preview_gif_url: Optional[str] = Field(None, alias='previewGifUrl')
@@ -169,9 +162,18 @@ class CagnottePostFeedResponse(BaseModel):
     standard_video_url: Optional[str] = Field(None, alias='standardVideoUrl')
     hd_video_url: Optional[str] = Field(None, alias='hdVideoUrl')
 
+    # # NOUVEAUX CHAMPS POUR LE FEED UNIFIÉ
+    # # Métadonnée pour indiquer un post "Découverte"
+    # is_new_discovery: Optional[bool] = Field(False, alias='isNewDiscovery', description="True si le post est une nouvelle publication mise en avant.")
+    
+    # # Métadonnées de tendance (optionnelles)
+    # trending_score: Optional[float] = Field(None, alias='trendingScore', description="Score de tendance si le post est issu du feed de tendances.")
+    # velocity_percent: Optional[float] = Field(None, alias='velocityPercent', description="Vélocité de la tendance.")
+    # trend_direction: Optional[str] = Field(None, alias='trendDirection', description="Direction de la tendance (ex: 'up').")
+
     class Config:
-        from_attributes=True
-        allow_population_by_field_name = True # Pour permettre l'utilisation des alias
+        from_attributes = True
+        # populate_by_name = True # Important pour que les alias fonctionnent dans les deux sens
 
 
 class EventModel(BaseModel):

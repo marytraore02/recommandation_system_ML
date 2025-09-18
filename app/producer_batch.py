@@ -818,6 +818,7 @@ async def get_category_popularity(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des données pour la catégorie {category_id}: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
 # =========================POPULARITY==========================================
 
 
@@ -866,6 +867,7 @@ async def get_trending_countries(
         logger.error(f"Erreur lors de la récupération des tendances pays: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
+
 #Tendances par catégorie
 @app.get("/analytics/trending/categories")
 async def get_trending_categories(
@@ -909,6 +911,8 @@ async def get_trending_categories(
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des tendances catégories: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
+
+
 # =========================TRENDING==========================================
 
 
