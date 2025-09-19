@@ -1,5 +1,5 @@
 # Dans schemas.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
@@ -66,13 +66,22 @@ class CagnotteSimpleResponse(BaseModel):
     class Config:
         from_attributes=True
 
+class TypeCompte(str, enum.Enum):
+    USER = "USER"
+    ORGANISATION = "ORGANISATION"
+    INFLUENCEUR = "INFLUENCEUR"
+    AMBASSADEUR = "AMBASSADEUR"
+    ADMIN = "ADMIN"
+
 class Author(BaseModel):
     id: UUID
     firstname: str
     lastname: str
+    email: str
+    phone: str
     picture: Optional[str] = None
-    role: Optional[str] = None
- 
+    role: TypeCompte = TypeCompte.USER
+
     class Config:
         from_attributes=True
 
@@ -85,7 +94,6 @@ class TypeCagnotte(str, enum.Enum):
     PUBLIC = "PUBLIC"
     PRIVE = "PRIVE"
     
-
 class Cagnotte(BaseModel):
     id: Optional[UUID] = None
     name: str = Field(..., max_length=255)
@@ -106,11 +114,7 @@ class Cagnotte(BaseModel):
 
     statut: Optional[StatutCagnotte] = StatutCagnotte.EN_COURS
     type: Optional[TypeCagnotte] = TypeCagnotte.PUBLIC
-
     commission: Decimal = Decimal("0.000")
-
-    # categorie: CategorieSchema
-    # admin: UserSchema
 
     categorie: Categorie
     admin: Author
@@ -118,10 +122,6 @@ class Cagnotte(BaseModel):
     created_date: Optional[datetime] = None
     last_modified_date: Optional[datetime] = None
     deleted: bool = False
-
-    # # Relations éventuelles (optionnelles selon ton besoin d’API)
-    # justificatifs: Optional[List[dict]] = None
-    # contributeurs: Optional[List[dict]] = None
 
     class Config:
         from_attributes = True
