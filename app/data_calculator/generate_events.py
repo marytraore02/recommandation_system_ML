@@ -434,7 +434,7 @@ class EventGenerator:
             if conn:
                 conn.close()
 
-    def export_events(self, events, output_format="json", filename=None, pg_params=None, table_name="user_events2"):
+    def export_events(self, events, output_format="csv", filename=None, pg_params=None, table_name="user_events"):
         """Exporte les événements dans le format spécifié"""
         if not events:
             logger.warning("⚠️  Aucun événement à exporter")
@@ -489,7 +489,7 @@ def main():
         "num_events": 3000,
         "start_date": cutoff_time.strftime("%Y-%m-%d %H:%M:%S"),
         "end_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "output_format": "json",
+        "output_format": "csv",
         "filename": None,
         "pg_params": DB_CONFIG
     }

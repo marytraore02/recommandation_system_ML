@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import UUID
 from enum import Enum
 import enum
+from decimal import Decimal
 from typing import List, Dict, Any, Optional
 
 
@@ -70,8 +71,8 @@ class Author(BaseModel):
     firstname: str
     lastname: str
     picture: Optional[str] = None
-    # role: Optional[str] = None
-
+    role: Optional[str] = None
+ 
     class Config:
         from_attributes=True
 
@@ -83,26 +84,44 @@ class StatutCagnotte(str, enum.Enum):
 class TypeCagnotte(str, enum.Enum):
     PUBLIC = "PUBLIC"
     PRIVE = "PRIVE"
+    
 
 class Cagnotte(BaseModel):
-    id: UUID
+    id: Optional[UUID] = None
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
-    pays: str = Field(..., max_length=100)
+    pays: str = Field(default="Mali", max_length=100)
+
     date_start: Optional[datetime] = None
     date_end: Optional[datetime] = None
-    objectif: Optional[int] = Field(None, ge=0)
-    total_solde: int = Field(0, ge=0)
-    current_solde: int = Field(0, ge=0)
+
+    objectif: Optional[int] = None
+    total_solde: int = 0
+    current_solde: int = 0
+    total_contributors: int = 0
+
+    is_certified: bool = False
+    mode_retrait: str = Field(default="VIREMENT_BANCAIRE", max_length=50)
+    renew_count: int = 0
+
     statut: Optional[StatutCagnotte] = StatutCagnotte.EN_COURS
     type: Optional[TypeCagnotte] = TypeCagnotte.PUBLIC
-    
+
+    commission: Decimal = Decimal("0.000")
+
+    # categorie: CategorieSchema
+    # admin: UserSchema
+
     categorie: Categorie
-    admin: Author  # Utiliser le schéma Author pour la relation
-    
-    created_date: datetime
-    last_modified_date: datetime
-    deleted: bool   
+    admin: Author
+
+    created_date: Optional[datetime] = None
+    last_modified_date: Optional[datetime] = None
+    deleted: bool = False
+
+    # # Relations éventuelles (optionnelles selon ton besoin d’API)
+    # justificatifs: Optional[List[dict]] = None
+    # contributeurs: Optional[List[dict]] = None
 
     class Config:
         from_attributes = True
@@ -162,7 +181,7 @@ class CagnottePostFeedResponse(BaseModel):
     standard_video_url: Optional[str] = Field(None, alias='standardVideoUrl')
     hd_video_url: Optional[str] = Field(None, alias='hdVideoUrl')
 
-    # # NOUVEAUX CHAMPS POUR LE FEED UNIFIÉ
+    # # NOUVEAUX CHAMPS POUR LE FEED UNIFIÉq
     # # Métadonnée pour indiquer un post "Découverte"
     # is_new_discovery: Optional[bool] = Field(False, alias='isNewDiscovery', description="True si le post est une nouvelle publication mise en avant.")
     

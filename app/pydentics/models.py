@@ -2,7 +2,7 @@
 
 # from pyparsing import Enum
 from sqlalchemy import (Column, String, Integer, BigInteger, Boolean, Text, 
-                        DateTime, Enum as SQLAlchemyEnum, ForeignKey)
+                        DateTime, Enum as SQLAlchemyEnum, ForeignKey, Numeric)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
@@ -10,6 +10,7 @@ from db.postgres_config import Base
 import enum
 from datetime import datetime
 from sqlalchemy.ext.declarative import declarative_base
+from decimal import Decimal
 
 
 class TypeRessource(str, enum.Enum):
@@ -73,30 +74,72 @@ class CategorieModel(Base):
     deleted = Column(Boolean, nullable=False, default=False)
 
 
+# class CagnotteModel(Base):
+#     __tablename__ = "cagnottes"
+#     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     name = Column(String(255), nullable=False)
+#     description = Column(Text)
+#     pays = Column(String(100), default="Mali")
+
+#     date_start = Column(DateTime, nullable=True)
+#     date_end = Column(DateTime, nullable=True)
+
+#     objectif = Column(BigInteger, nullable=True)
+#     total_solde = Column(BigInteger, default=0)
+#     current_solde = Column(BigInteger, default=0)
+#     statut = Column(SQLAlchemyEnum(StatutCagnotte))
+#     type = Column(SQLAlchemyEnum(TypeCagnotte))
+    
+#     id_categorie = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+#     admin_id = Column("admin", UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+
+#     created_date = Column(DateTime, default=datetime.utcnow)
+#     last_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+#     deleted = Column(Boolean, nullable=False, default=False)
+    
+#     # Relations
+#     categorie = relationship("CategorieModel")
+#     admin = relationship("UserModel")
+
+
 class CagnotteModel(Base):
     __tablename__ = "cagnottes"
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
-    description = Column(Text)
-    pays = Column(String(100), default="Mali")
+    description = Column(Text, nullable=True)
+    pays = Column(String(100), default="Mali", nullable=False)
+
     date_start = Column(DateTime, nullable=True)
     date_end = Column(DateTime, nullable=True)
+
     objectif = Column(BigInteger, nullable=True)
     total_solde = Column(BigInteger, default=0)
     current_solde = Column(BigInteger, default=0)
-    statut = Column(SQLAlchemyEnum(StatutCagnotte))
-    type = Column(SQLAlchemyEnum(TypeCagnotte))
-    
+
+    total_contributors = Column(Integer, default=0)  # ✅ Ajouté
+    is_certified = Column(Boolean, default=False)  # ✅ Ajouté
+    mode_retrait = Column(String(50), default="VIREMENT_BANCAIRE")  # ✅ Ajouté
+    renew_count = Column(Integer, default=0)  # ✅ Ajouté
+
+    commission = Column(Numeric(8, 3), default=Decimal("0.000"), nullable=False)  # ✅ Ajouté
+
+    statut = Column(SQLAlchemyEnum(StatutCagnotte), nullable=True)
+    type = Column(SQLAlchemyEnum(TypeCagnotte), default=TypeCagnotte.PUBLIC, nullable=False)
+
     id_categorie = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
     admin_id = Column("admin", UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
 
     created_date = Column(DateTime, default=datetime.utcnow)
     last_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted = Column(Boolean, nullable=False, default=False)
-    
+
     # Relations
     categorie = relationship("CategorieModel")
     admin = relationship("UserModel")
+    # justificatifs = relationship("JustificatifModel", back_populates="cagnotte", lazy="select")
+    # contributeurs = relationship("ContributeurModel", back_populates="cagnotte", lazy="select")
+
 
 
 
