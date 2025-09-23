@@ -388,9 +388,6 @@ class EnhancedPopularityAnalyzer:
         
         return results
     
-
-    
-
     def calculate_trending_by_geography(self, events, recent_hours=1, comparison_hours=2):
         """Calcule les tendances par pays avec IDs des vidéos"""
         # now = self.parse_timestamp("2025-08-29T13:00:00")
@@ -575,7 +572,6 @@ class EnhancedPopularityAnalyzer:
         
         return trending_scores
 
-
     def store_comprehensive_results(self, results, store_redis=True):
             """Stocke tous les résultats de l'analyse comprehensive"""
             if store_redis and self.redis_client:
@@ -597,7 +593,6 @@ class EnhancedPopularityAnalyzer:
                 except Exception as e:
                     logger.error(f"❌ Erreur stockage Redis comprehensive: {e}")
             
-
     def display_comprehensive_results(self, results, show_top=5):
         """Affiche tous les résultats de l'analyse comprehensive"""
         print("\n" + "="*100)
@@ -777,11 +772,7 @@ class EnhancedPopularityAnalyzer:
                 print(f"   {day:10} | "
                     f"Total événements: {total_events:5d} | "
                     f"Heure de pointe: {peak_hour:2d}h")
-                
-
-
-
-
+   
 def main():
     """Fonction principale avec exemple d'utilisation"""
     
@@ -806,12 +797,6 @@ def main():
             redis_config=redis_config,  
             minio_config=minio_config 
         )
-
-        # results = analyzer.analyze_comprehensive(
-        #     source_type="minio",
-        #     hours_back=24
-        # )
-
         results = analyzer.analyze_comprehensive(
             events_source="user_events2.json",
             source_type="json",

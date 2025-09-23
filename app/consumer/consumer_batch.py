@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,13 +57,21 @@ def update_user_profile(events: List[Dict[str, Any]]):
                 continue
 
             user_type = event.get("user_type")
+            phone = event.get("phone")
             redis_key = None
 
             if user_type == "authenticated":
-                if user_id := event.get("user_id"): # Python 3.8+ Walrus operator
+                if user_id := event.get("user_id"):
+                    print(f"le user_id actuel: {user_id}")
                     redis_key = f"profile:user:{user_id}"
+
+                    if phone := event.get("phone"):
+                        print(f"le phone actuel: {phone}")
+                        redis_key = f"profile:user:{phone}"
+
             elif user_type == "anonymous":
                 if session_id := event.get("session_id"):
+                    print(f"la session actuel: {session_id}")
                     redis_key = f"profile:session:{session_id}"
 
             if redis_key:

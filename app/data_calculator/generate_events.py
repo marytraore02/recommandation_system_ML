@@ -55,7 +55,7 @@ class EventGenerator:
             logger.info("🔍 Connexion à la base de données et chargement des données...")
 
             # 1. Charger les utilisateurs
-            cur.execute("SELECT id FROM users;")
+            cur.execute("SELECT id, phone FROM users;")
             self.users = cur.fetchall()
             logger.info(f"✅ {len(self.users)} utilisateurs chargés.")
             if not self.users:
@@ -153,6 +153,7 @@ class EventGenerator:
             user = random.choice(self.users)
             return {
                 "id": str(user["id"]),
+                "phone": user["phone"],
                 "type": "authenticated"
             }
 
@@ -189,12 +190,13 @@ class EventGenerator:
             }
         }
         
-        # Ajouter user_id seulement pour les utilisateurs authentifiés
+        # Ajouter user_id et phone pour les utilisateurs authentifiés
         # Pour les anonymes, ajouter session_id seulement
         if user_info["type"] == "anonymous":
             event["session_id"] = user_info["session_id"]
         else:
             event["user_id"] = user_info["id"]
+            event["phone"] = user_info["phone"]
         
         return event
 
@@ -217,12 +219,13 @@ class EventGenerator:
             "data": {}
         }
         
-        # Ajouter user_id seulement pour les utilisateurs authentifiés
+        # Ajouter user_id et phone pour les utilisateurs authentifiés
         # Pour les anonymes, ajouter session_id seulement
         if user_info["type"] == "anonymous":
             event["session_id"] = user_info["session_id"]
         else:
             event["user_id"] = user_info["id"]
+            event["phone"] = user_info["phone"]
         
         if event_type == "video_share":
             event["data"]["platform"] = random.choice(["whatsapp", "facebook", "twitter", "telegram"])
@@ -251,12 +254,13 @@ class EventGenerator:
             }
         }
         
-        # Ajouter user_id seulement pour les utilisateurs authentifiés
+        # Ajouter user_id et phone pour les utilisateurs authentifiés
         # Pour les anonymes, ajouter session_id seulement
         if user_info["type"] == "anonymous":
             event["session_id"] = user_info["session_id"]
         else:
             event["user_id"] = user_info["id"]
+            event["phone"] = user_info["phone"]
         
         return event
 
@@ -316,9 +320,12 @@ class EventGenerator:
             "id_categorie": event.get("id_categorie", ""),
         }
         
-        # Ajouter user_id ou session_id selon le type d'utilisateur
+        # Ajouter user_id et phone pour les utilisateurs authentifiés
+        # Ajouter session_id pour les anonymes
         if "user_id" in event:
             flat_event["user_id"] = event["user_id"]
+        if "phone" in event:
+            flat_event["phone"] = event["phone"]
         if "session_id" in event:
             flat_event["session_id"] = event["session_id"]
         
@@ -342,7 +349,7 @@ class EventGenerator:
                     "anonymous_events": len([e for e in events if e.get("user_type") == "anonymous"]),
                     "authenticated_events": len([e for e in events if e.get("user_type") == "authenticated"])
                 },
-                "users": [{"id": str(u["id"])} for u in self.users],
+                "users": [{"id": str(u["id"]), "phone": u["phone"]} for u in self.users],
                 "cagnottes": [{"id": str(c["id"]), "id_categorie": str(c["id_categorie"])} for c in self.cagnottes],
                 "categories": [{"id": str(c["id"])} for c in self.categories],
                 "video_resources_summary": {
@@ -374,67 +381,8 @@ class EventGenerator:
             writer.writerows(flat_events)
         
         logger.info(f"✅ {len(events)} événements sauvegardés dans {filename} (CSV)")
-    
-    def save_to_postgresql(self, events, connection_params, table_name="user_events"):
-        """Sauvegarde directement dans PostgreSQL"""
-        conn = None
-        try:
-            conn = psycopg2.connect(**connection_params)
-            cur = conn.cursor()
-            
-            # Créer la table si elle n'existe pas (structure mise à jour)
-            create_table_query = f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                event_id INT PRIMARY KEY,
-                event_type VARCHAR(50) NOT NULL,
-                timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-                user_id TEXT,
-                user_type VARCHAR(20) NOT NULL,
-                session_id TEXT,
-                cagnotte_id UUID,
-                video_id BIGINT,
-                post_id UUID,
-                id_categorie UUID,
-                data JSONB
-            );
-            """
-            cur.execute(create_table_query)
-            
-            # Insérer les événements
-            for event in events:
-                insert_query = f"""
-                INSERT INTO {table_name} (event_id, event_type, timestamp, user_id, user_type, 
-                                        session_id, cagnotte_id, video_id, post_id, id_categorie, pays, data)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING;
-                """
-                cur.execute(insert_query, (
-                    event["event_id"],
-                    event["event_type"],
-                    event["timestamp"],
-                    event.get("user_id"),  # Sera NULL pour les utilisateurs anonymes
-                    event["user_type"],
-                    event.get("session_id"),  # Sera NULL pour les utilisateurs authentifiés
-                    event.get("cagnotte_id"),
-                    event.get("video_id"),
-                    event.get("post_id"),
-                    event.get("id_categorie"),
-                    event.get("pays"),
-                    json.dumps(event.get("data", {}))
-                ))
-            
-            conn.commit()
-            logger.info(f"✅ {cur.rowcount} événements insérés dans PostgreSQL (table: {table_name})")
-            
-        except (Exception, psycopg2.DatabaseError) as e:
-            logger.error(f"❌ Erreur lors de l'insertion en base de données: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
 
-    def export_events(self, events, output_format="csv", filename=None, pg_params=None, table_name="user_events"):
+    def export_events(self, events, output_format="json", filename=None, pg_params=None, table_name="user_events"):
         """Exporte les événements dans le format spécifié"""
         if not events:
             logger.warning("⚠️  Aucun événement à exporter")
@@ -489,7 +437,7 @@ def main():
         "num_events": 3000,
         "start_date": cutoff_time.strftime("%Y-%m-%d %H:%M:%S"),
         "end_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "output_format": "csv",
+        "output_format": "json",
         "filename": None,
         "pg_params": DB_CONFIG
     }
