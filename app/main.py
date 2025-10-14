@@ -679,6 +679,7 @@ async def get_user_preferences_feed(
 
 
 
+
 #===============================RECOMMANDATIONS==============================
 @app.get("/recommendations/feed/v1/", response_model=List[schemas2.CagnottePostFeedResponse])
 async def get_recommendations_feed(
