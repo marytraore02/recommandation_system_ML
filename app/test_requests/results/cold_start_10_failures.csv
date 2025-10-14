@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences
+GET,/cold-start/combined/feed/v1/Senegal?limit=20&randomize=true,CatchResponseError('Status 503'),9
+GET,/cold-start/combined/feed/v1/Mali?limit=20&randomize=true,CatchResponseError('Status 503'),10
+GET,/cold-start/combined/feed/v1/Cameroun?limit=20&randomize=true,CatchResponseError('Status 503'),10
