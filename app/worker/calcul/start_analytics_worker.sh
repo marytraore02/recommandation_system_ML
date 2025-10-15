@@ -1,12 +1,8 @@
 #!/bin/bash
 
 # Script pour démarrer le worker ARQ pour les analytics
-# Ce worker exécutera automatiquement la tâche d'analyse toutes les 24h à 2h du matin
 
 echo "🚀 Démarrage du worker ARQ pour les analytics..."
-
-# Activer l'environnement virtuel si nécessaire
-# source venv/bin/activate
 
 # Démarrer le worker ARQ
 arq calcul_popular_trending.WorkerSettings

@@ -17,10 +17,17 @@ producers/__init__.py
 pydentics/__init__.py
 pydentics/__pycache__/
 
-requettes_simulations/
-requettes_simulations/__pycache__/
-requettes_simulations/__init__.py
-requettes_simulations/results/
+test_requests/
+test_requests/__pycache__/
+test_requests/__init__.py
+test_requests/results/
+
+worker/__pycahe__/
+worker/__init__.py
+worker/feed/__pycache__/
+worker/feed/__init__.py
+worker/calcul/__pycache__/
+worker/calcul/__init__.py
 
 
 
@@ -38,8 +45,8 @@ app/producers/__init__.py
 app/pydentics/__init__.py
 app/pydentics/__pycache__/
 
-app/requettes_simulations/
-app/requettes_simulations/__pycache__/
-app/requettes_simulations/__init__.py
-app/requettes_simulations/results/
+app/test_requests/
+app/test_requests/__pycache__/
+app/test_requests/__init__.py
+app/test_requests/results/
 
