@@ -20,7 +20,7 @@ class FeedConfig:
 
     # Ne pas exécuter la DB à l'import — on garde la valeur par défaut jusqu'au chargement explicite.
     COUNTRIES = TOP_DEFAULT_COUNTRIES
-    CRON_INTERVAL_MINUTES = 5
+    CRON_INTERVAL_MINUTES = 1440  # Toutes les 24 heures
 
     # Timeouts pour éviter les blocages
     DB_QUERY_TIMEOUT = 10

@@ -485,13 +485,29 @@ class WorkerSettings:
     max_jobs = 10
     job_timeout = 300
     keep_result = 600
-    
-    # Cron toutes les 2 minutes
+
+    # Cron job: Tous les jours à 3h du matin
     cron_jobs = [
-        cron(
-            schedule_feed_generation,
-            minute={i for i in range(0, 60, 2)},
-            # minute={i for i in range(0, 60, FeedConfig.CRON_INTERVAL_MINUTES)},
-            run_at_startup=True
-        )
+        cron(schedule_feed_generation, hour=3, minute=0, run_at_startup=True)
     ]
+
+    
+    # # Cron toutes les 2 minutes
+    # cron_jobs = [
+    #     cron(
+    #         schedule_feed_generation,
+    #         # minute={i for i in range(0, 60, 2)},
+    #         minute={i for i in range(0, 60, FeedConfig.CRON_INTERVAL_MINUTES)},
+    #         run_at_startup=True
+    #     )
+    # ]
+    
+    # # Cron job dynamique
+    # cron_jobs = [
+    #     cron(
+    #         schedule_feed_generation,
+    #         minute={i for i in range(0, 60, min(FeedConfig.CRON_INTERVAL_MINUTES, 60))},
+    #         hour=None if FeedConfig.CRON_INTERVAL_MINUTES < 60 else range(0, 24, FeedConfig.CRON_INTERVAL_MINUTES // 60),
+    #         run_at_startup=True
+    #     )
+    # ]

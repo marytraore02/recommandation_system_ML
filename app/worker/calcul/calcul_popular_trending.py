@@ -641,35 +641,17 @@ class WorkerSettings:
     functions = [run_analytics_task]
     
     # Planification avec cron: tous les jours à 2h du matin
-    # cron_jobs = [
-    #     cron(run_analytics_task, hour=2, minute=0, run_at_startup=True)
-    # ]
-
-    # # Toutes les 12 heures
-    # cron_jobs = [
-    #     cron(run_analytics_task, hour={0, 12}, minute=0)
-    # ]
-
-    # # Toutes les 6 heures
-    # cron_jobs = [
-    #     cron(run_analytics_task, hour={0, 6, 12, 18}, minute=0)
-    # ]
+    cron_jobs = [
+        cron(run_analytics_task, hour=2, minute=0, run_at_startup=True)
+    ]
 
     # cron_jobs = [
     #     cron(
     #         run_analytics_task,
-    #         minute=range(0, 60, 2),   # toutes les 2 minutes
-    #         run_at_startup=True        # exécute aussi au démarrage du worker
+    #         minute={i for i in range(0, 60, 2)},
+    #         run_at_startup=True
     #     )
     # ]
-
-    cron_jobs = [
-        cron(
-            run_analytics_task,
-            minute={i for i in range(0, 60, 2)},
-            run_at_startup=True
-        )
-    ]
     
     # Nom du worker (pour les logs)
     job_timeout = 3600  # 1 heure max pour l'exécution
