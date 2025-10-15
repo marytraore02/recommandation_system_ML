@@ -395,10 +395,10 @@ async def schedule_feed_generation(ctx: Dict[str, Any]):
     print(f"📅 [SCHEDULER] Début de planification des feeds")
     arq_redis: ArqRedis = ctx['redis']
     
-    # 🔍 DIAGNOSTIC: Vérifier l'état de la queue
+    # 🔍 DIAGNOSTIC: Vérifier l'état de la queue CORRECTE
     try:
-        queue_length = await arq_redis.llen('arq:queue')
-        print(f"📊 [SCHEDULER] Taille actuelle de la queue: {queue_length}")
+        queue_length = await arq_redis.llen('arq:queue:feed')
+        print(f"📊 [SCHEDULER] Taille actuelle de la queue 'arq:queue:feed': {queue_length}")
     except Exception as e:
         print(f"⚠️ [SCHEDULER] Impossible de lire la queue: {e}")
     
@@ -416,7 +416,7 @@ async def schedule_feed_generation(ctx: Dict[str, Any]):
     
     # 🔍 DIAGNOSTIC: Vérifier la queue après enqueue
     try:
-        queue_length = await arq_redis.llen('arq:queue')
+        queue_length = await arq_redis.llen('arq:queue:feed')  # ✅ MODIFICATION: nom de queue spécifique
         print(f"📊 [SCHEDULER] Taille de la queue après enqueue: {queue_length}")
     except Exception as e:
         print(f"⚠️ [SCHEDULER] Impossible de lire la queue: {e}")
@@ -443,7 +443,7 @@ async def on_startup(ctx: Dict[str, Any]):
     )
     
     from arq import create_pool
-    ctx['redis'] = await create_pool(redis_settings)
+    ctx['redis'] = await create_pool(redis_settings, default_queue_name='arq:queue:feed')
     
     # 🔍 DIAGNOSTIC: Tester la connexion
     try:
@@ -451,9 +451,10 @@ async def on_startup(ctx: Dict[str, Any]):
         print(f"✅ [STARTUP] Connexion Redis réussie")
     except Exception as e:
         print(f"❌ [STARTUP] Échec de connexion Redis: {e}")
-    
+
     print(f"🚀 [STARTUP] Worker démarré - Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
     print(f"📊 [STARTUP] Config: {len(FeedConfig.COUNTRIES)} pays, cache TTL={FeedConfig.CACHE_TTL}s")
+    print(f"📮 [STARTUP] Queue: arq:queue:feed")
 
 
 async def on_shutdown(ctx: Dict[str, Any]):
@@ -464,17 +465,21 @@ async def on_shutdown(ctx: Dict[str, Any]):
 
 class WorkerSettings:
     """Configuration ARQ optimisée."""
-    functions = [generate_and_cache_feed_for_country, schedule_feed_generation]
-    on_startup = on_startup
-    on_shutdown = on_shutdown
-    
-    # 🔍 DIAGNOSTIC: Utiliser les mêmes paramètres Redis
+
+    # Nom de queue unique pour ce worker
+    queue_name = 'arq:queue:feed'
+
+    # 🔧 Configuration Redis explicite pour ce worker
     redis_settings = RedisSettings(
         host=settings.REDIS_HOST,
         port=settings.REDIS_PORT,
         password=settings.REDIS_PASSWORD,
         database=settings.REDIS_DB
     )
+
+    functions = [generate_and_cache_feed_for_country, schedule_feed_generation]
+    on_startup = on_startup
+    on_shutdown = on_shutdown
     
     # Job settings pour la performance
     max_jobs = 10
@@ -485,7 +490,8 @@ class WorkerSettings:
     cron_jobs = [
         cron(
             schedule_feed_generation,
-            minute={i for i in range(0, 60, FeedConfig.CRON_INTERVAL_MINUTES)},
+            minute={i for i in range(0, 60, 2)},
+            # minute={i for i in range(0, 60, FeedConfig.CRON_INTERVAL_MINUTES)},
             run_at_startup=True
         )
     ]

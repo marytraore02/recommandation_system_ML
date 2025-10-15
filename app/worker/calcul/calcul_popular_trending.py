@@ -12,7 +12,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from utils import config
-from worker.feed.feed_popular_trending_new import schedule_feed_generation, generate_and_cache_feed_for_country
+# from worker.feed.feed_popular_trending_new import schedule_feed_generation, generate_and_cache_feed_for_country
 
 load_dotenv()
 
@@ -493,7 +493,7 @@ class EnhancedPopularityAnalyzer:
                 # Expiration après 25 heures pour avoir une marge
                 self.redis_client.setex(
                     redis_key,
-                    90000,  # 25 heures en secondes
+                    config.CalculationConfig.DUREE_ANALYTICS, # 25 heures en secondes
                     json.dumps(data, ensure_ascii=False, default=str)
                 )
             
@@ -504,7 +504,7 @@ class EnhancedPopularityAnalyzer:
             }
             self.redis_client.setex(
                 "comprehensive_analytics_metadata",
-                90000,
+                config.CalculationConfig.DUREE_ANALYTICS,
                 json.dumps(metadata)
             )
             
@@ -634,13 +634,16 @@ class WorkerSettings:
         database=int(os.getenv("REDIS_DB")),
     )
     
+     # Nom de queue unique pour ce worker
+    queue_name = 'arq:queue:analytics'
+
     # Liste des fonctions que le worker peut exécuter
     functions = [run_analytics_task]
     
     # Planification avec cron: tous les jours à 2h du matin
-    cron_jobs = [
-        cron(run_analytics_task, hour=2, minute=0, run_at_startup=True)
-    ]
+    # cron_jobs = [
+    #     cron(run_analytics_task, hour=2, minute=0, run_at_startup=True)
+    # ]
 
     # # Toutes les 12 heures
     # cron_jobs = [
@@ -651,6 +654,22 @@ class WorkerSettings:
     # cron_jobs = [
     #     cron(run_analytics_task, hour={0, 6, 12, 18}, minute=0)
     # ]
+
+    # cron_jobs = [
+    #     cron(
+    #         run_analytics_task,
+    #         minute=range(0, 60, 2),   # toutes les 2 minutes
+    #         run_at_startup=True        # exécute aussi au démarrage du worker
+    #     )
+    # ]
+
+    cron_jobs = [
+        cron(
+            run_analytics_task,
+            minute={i for i in range(0, 60, 2)},
+            run_at_startup=True
+        )
+    ]
     
     # Nom du worker (pour les logs)
     job_timeout = 3600  # 1 heure max pour l'exécution

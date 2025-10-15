@@ -431,10 +431,10 @@ def main():
         print("Vérifiez que vous avez des données dans les tables : users, cagnottes, categories, cagnotte_posts, ressources")
         return
         
-    cutoff_time = datetime.now() - timedelta(hours=48)
+    cutoff_time = datetime.now() - timedelta(hours=72)
 
     config = {
-        "num_events": 10000,
+        "num_events": 20000,
         "start_date": cutoff_time.strftime("%Y-%m-%d %H:%M:%S"),
         "end_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "output_format": "json",

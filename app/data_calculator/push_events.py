@@ -14,7 +14,7 @@ CLICKHOUSE_HOST = "localhost"
 CLICKHOUSE_DB = "events_db"
 CLICKHOUSE_TABLE = "user_events"
 BATCH_SIZE = 1000
-SLEEP_SECONDS = 5
+SLEEP_SECONDS = 3
 
 def get_clickhouse_count():
     """Retourne le nombre total d'enregistrements dans la table ClickHouse."""
@@ -58,7 +58,8 @@ def main():
         batch = events[start:end]
         batch_index = start // BATCH_SIZE + 1
 
-        print(f"🚀 Envoi du batch {batch_index} : {start} → {end - 1}")
+        print(f"🚀 Envoi du batch {batch_index} : {start
+        } → {end - 1}")
         send_batch(batch, batch_index)
 
         # Vérification du total dans ClickHouse après envoi

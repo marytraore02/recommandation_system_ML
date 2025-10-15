@@ -69,7 +69,7 @@ def load_countries_from_db_sync(timeout_seconds: int = 10):
 
 
 # ===================================================================
-# CONFIGURATION DE L'ENDPOINT
+# CONFIGURATION
 # ===================================================================
 class EndpointConfig:
     """Configuration pour l'endpoint - cohérente avec le worker."""
@@ -93,4 +93,5 @@ class CalculationConfig:
     
     ANONYMOUS_PROFILE_TTL = 30 * 60      # 30 minutes
     AUTHENTICATED_PROFILE_TTL = 90 * 24 * 3600 # 90 jours
+    DUREE_ANALYTICS = 90000  # Durée max d'une tâche d'analytics en secondes
 

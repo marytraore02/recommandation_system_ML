@@ -6,6 +6,10 @@ from datetime import datetime
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+from utils.config import CalculationConfig, FeedConfig
 
 from aiokafka import AIOKafkaConsumer
 from clickhouse_connect import get_client
@@ -252,7 +256,7 @@ class EventProcessor:
             insert_columns = [col for col in self.column_order]
             
             self.clickhouse_client.insert(
-                'user_events',
+                CalculationConfig.TABLE_NAME,
                 rows,
                 column_names=insert_columns
             )
