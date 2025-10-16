@@ -12,7 +12,8 @@ TOP_DEFAULT_COUNTRIES = ["Mali", "Cameroun", "Senegal"]
 class FeedConfig:
     """Configuration centralisée pour la génération de feed."""
     CACHE_KEY_TEMPLATE = "feed:combined:{country}"
-    CACHE_TTL = 360  # 2 minutes
+    # CACHE_TTL = 360  # 2 minutes
+    CACHE_TTL = 3600  #  1 heure
     FEED_LIMIT = 100
     NEW_ARRIVALS_LIMIT = 10
     POPULAR_RATIO = 3

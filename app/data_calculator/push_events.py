@@ -39,7 +39,7 @@ def send_batch(events_batch, batch_index):
         response = requests.post(ENDPOINT, json=payload, timeout=30)
         print(f"✅ Batch {batch_index} envoyé ({len(events_batch)} événements) - "
               f"Code HTTP: {response.status_code}")
-        if response.status_code != 200:
+        if response.status_code != 202:
             print("⚠️ Réponse du serveur:", response.text)
     except Exception as e:
         print(f"❌ Erreur lors de l'envoi du batch {batch_index}: {e}")

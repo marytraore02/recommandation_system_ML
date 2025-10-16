@@ -60,6 +60,7 @@ MarkupSafe==3.0.3
 minio==7.2.16
 msgpack==1.1.2
 multidict==6.6.4
+ngrok==1.5.1
 numpy==2.3.3
 orjson==3.11.3
 packaging==25.0

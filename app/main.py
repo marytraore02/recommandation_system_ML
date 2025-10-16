@@ -15,7 +15,6 @@ from typing import Annotated
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-import pydentics.schemas3
 from pydentics import models
 from pydentics import schemas2
 from pydentics import schemas3
@@ -86,7 +85,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
     logger.info("Pool de connexions de la base de données fermé.")
 
-
+    
 app = FastAPI(
     title="Event Ingestion API",
     description="An ultra-fast API to receive event batches and push them to Kafka.",

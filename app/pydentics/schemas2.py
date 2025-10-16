@@ -187,7 +187,6 @@ class CagnottePostFeedResponse(BaseModel):
     id: UUID
     cagnotte: CagnotteSimpleResponse
     author: Author
-    sponsors: List[Sponsor] = Field(default_factory=list, description="Liste des sponsors associés à la cagnotte.")
     type: TypePost
     title: Optional[str] = None
     content: Optional[str] = None
